@@ -1,17 +1,21 @@
-"""Определение периода по зависимости координаты маркера от времени.
+"""Определение периода по зависимости координаты груза от времени.
 
 Почему не по максимумам (как в исходном плане): в крайней точке скорость равна нулю,
 вершина кривой плоская и момент экстремума определяется плохо. В положении равновесия
-скорость максимальна, поэтому момент прохождения через центр фиксируется с точностью
-до долей кадра. Алгоритм:
+скорость максимальна, поэтому момент прохождения центра фиксируется с точностью до долей
+кадра. Алгоритм:
 
-1. Грубая оценка центра (медиана) и периода (по переходам через медиану).
-2. Подгонка затухающей синусоиды x(t) = c + A·e^(−γt)·cos(2πt/T + φ) — даёт центр c,
-   огибающую амплитуды и независимую оценку периода.
-3. Поиск моментов прохождения через c с гистерезисом (защита от дрожания маркера)
-   и субкадровой точностью (линейная аппроксимация по кадрам в окрестности нуля).
-4. Линейная регрессия моментов: t_k = a + b·d_k + k·T/2 (d_k — направление, учитывает
-   несимметричность). Наклон даёт период, остаток — погрешность фиксации одного момента.
+1. Пики каждого полуколебания (с параболическим уточнением) дают центр колебаний c
+   (усреднение соседних пиков компенсирует затухание) и огибающую амплитуды A(t).
+2. Моменты прохождения c ищутся с гистерезисом (дрожание около центра не даёт ложных
+   переходов) и уточняются «фазовой» подгонкой: arcsin((x − c)/A) линейно растёт со
+   временем, поэтому прямая проводится по всем кадрам центральной части полуколебания,
+   а не по двум соседним.
+3. Регрессия моментов t_k = a + b·d_k + (T/2)·k + q·k² (d_k — направление, учитывает
+   несимметричность, q — медленный дрейф периода из-за затухания амплитуды). Выбросы
+   (сбой трекинга) отбрасываются по медианному отклонению. Остаток — погрешность
+   фиксации одного момента.
+4. Независимая проверка — подгонка затухающей синусоиды.
 """
 
 from __future__ import annotations
@@ -20,9 +24,13 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
+from scipy.ndimage import maximum_filter1d
 from scipy.optimize import curve_fit
 
 HYSTERESIS_FRACTION = 0.3
+MAX_HALF_PERIOD_SPREAD = 0.2
+"""Относительный разброс полупериодов, выше которого это уже не колебания, а шум."""
+MAX_SKIPPED_FRACTION = 0.3
 MIN_POINTS = 30
 
 
@@ -60,7 +68,11 @@ class PeriodAnalysis:
     period_values: list[float] = field(default_factory=list)
     """Отдельные периоды — интервалы между соседними одноимёнными переходами."""
     period_value_times: list[float] = field(default_factory=list)
+    period_amplitudes: list[float] = field(default_factory=list)
+    """Амплитуда (в единицах координаты) в середине каждого отдельного периода."""
     period_std: float | None = None
+    outliers: int = 0
+    """Сколько моментов отброшено как сбои трекинга."""
     fit: DampedFit | None = None
 
     @property
@@ -156,43 +168,136 @@ def find_crossings(
     return np.asarray(times), np.asarray(dirs, dtype=int)
 
 
+def _half_cycle_peaks(
+    t: np.ndarray, s: np.ndarray, times: np.ndarray, dirs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Экстремум между соседними переходами, уточнённый параболой по трём точкам."""
+    peak_t: list[float] = []
+    peak_v: list[float] = []
+    for j in range(len(times) - 1):
+        sel = np.flatnonzero((t > times[j]) & (t < times[j + 1]) & np.isfinite(s))
+        if sel.size < 3:
+            continue
+        sign = dirs[j]
+        m = sel[int(np.argmax(sign * s[sel]))]
+        tm, vm = t[m], s[m]
+        if 0 < m < len(s) - 1 and np.isfinite(s[m - 1]) and np.isfinite(s[m + 1]):
+            a, b, c = s[m - 1], s[m], s[m + 1]
+            denom = a - 2 * b + c
+            if denom != 0:
+                off = 0.5 * (a - c) / denom
+                if abs(off) <= 1:
+                    tm = t[m] + off * (t[m + 1] - t[m - 1]) / 2
+                    vm = b - 0.25 * (a - c) * off
+        peak_t.append(float(tm))
+        peak_v.append(float(vm))
+    return np.asarray(peak_t), np.asarray(peak_v)
+
+
+def _center_offset(peak_v: np.ndarray) -> float:
+    """Центр по тройкам соседних пиков (p₋ + 2p₀ + p₊)/4 — линейное затухание сокращается."""
+    if peak_v.size < 3:
+        return float((peak_v.max() + peak_v.min()) / 2) if peak_v.size else 0.0
+    triples = (peak_v[:-2] + 2 * peak_v[1:-1] + peak_v[2:]) / 4
+    return float(np.median(triples))
+
+
+def _envelope(t: np.ndarray, peak_t: np.ndarray, peak_v: np.ndarray) -> np.ndarray:
+    amp = np.abs(peak_v)
+    good = amp > 0
+    if good.sum() == 0:
+        return np.full_like(t, np.nan)
+    if good.sum() == 1:
+        return np.full_like(t, amp[good][0])
+    return np.exp(np.interp(t, peak_t[good], np.log(amp[good])))
+
+
+def _phase_refine(
+    t: np.ndarray,
+    s: np.ndarray,
+    env: np.ndarray,
+    times: np.ndarray,
+    dirs: np.ndarray,
+    period: float,
+) -> np.ndarray:
+    """Уточнение каждого момента по центральной части полуколебания (|s| < A·sin 55°).
+
+    Фаза u = arcsin(s/A) линейна во времени; веса cos²u учитывают, что ближе к краям
+    arcsin сильнее усиливает шум.
+    """
+    limit = math.sin(math.radians(55))
+    refined = times.copy()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = s / env
+    for j, (tc, d) in enumerate(zip(times, dirs, strict=True)):
+        win = (np.abs(t - tc) < period / 4) & np.isfinite(ratio) & (np.abs(ratio) < limit)
+        if win.sum() < 3:
+            continue
+        u = np.arcsin(ratio[win]) * d
+        w = np.sqrt(np.cos(u) ** 2)
+        dt = t[win] - tc
+        design = np.column_stack([np.ones_like(dt), dt]) * w[:, None]
+        (a, b), *_ = np.linalg.lstsq(design, u * w, rcond=None)
+        if b > 0 and abs(a / b) < period / 8:
+            refined[j] = tc - a / b
+    return refined
+
+
 def analyze_oscillation(t: np.ndarray, x: np.ndarray) -> PeriodAnalysis:
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
     valid = np.isfinite(x)
     if valid.sum() < MIN_POINTS:
         raise AnalysisError(
-            f"Маркер найден только на {int(valid.sum())} кадрах — нужно хотя бы {MIN_POINTS}."
+            f"Груз найден только на {int(valid.sum())} кадрах — нужно хотя бы {MIN_POINTS}."
         )
     frame_dt = float(np.median(np.diff(t)))
     max_gap = 3.5 * frame_dt
 
-    center0 = float(np.median(x[valid]))
-    rough = _rough_crossings(t, x - center0, max_gap)
+    center = float(np.median(x[valid]))
+    rough = _rough_crossings(t, x - center, max_gap)
     if len(rough) < 3:
         raise AnalysisError(
-            "На записи меньше одного полного колебания — проверьте настройки цвета и обрезку."
+            "На записи меньше одного полного колебания — проверьте настройки трекинга и обрезку."
         )
-    period0 = 2 * float(np.median(np.diff(rough)))
+    period_est = 2 * float(np.median(np.diff(rough)))
 
-    fit = fit_damped_cosine(t, x, period0, center0)
-    center = fit.center if fit else center0
-    period_est = fit.period if fit else period0
+    # Порог гистерезиса — от локальной амплитуды (скользящий максимум за период): так он
+    # годится и в начале длинной серии, и в конце, когда амплитуда сильно затухла.
+    window = max(3, round(period_est / frame_dt))
+    local_amp = maximum_filter1d(np.where(valid, np.abs(x - center), 0.0), size=window)
 
-    if fit:
-        envelope = fit.amplitude * np.exp(-fit.damping * (t - fit.t_ref))
-    else:
-        amp = float(np.percentile(x[valid], 98) - np.percentile(x[valid], 2)) / 2
-        envelope = np.full_like(t, amp)
-    times, dirs = find_crossings(t, x - center, HYSTERESIS_FRACTION * envelope, max_gap)
-    if len(times) < 3:
-        raise AnalysisError("Не удалось надёжно найти моменты прохождения положения равновесия.")
+    times = dirs = peak_t = peak_v = np.array([])
+    for _ in range(3):  # центр уточняется по пикам, затем переходы ищутся заново
+        s = x - center
+        times, dirs = find_crossings(t, s, HYSTERESIS_FRACTION * local_amp, max_gap)
+        if len(times) < 3:
+            raise AnalysisError(
+                "Не удалось надёжно найти моменты прохождения положения равновесия."
+            )
+        peak_t, peak_v = _half_cycle_peaks(t, s, times, dirs)
+        offset = _center_offset(peak_v)
+        center += offset
+        if abs(offset) < 0.05:
+            break
+    s = x - center
+    peak_t, peak_v = _half_cycle_peaks(t, s, times, dirs)
+    env = _envelope(t, peak_t, peak_v)
+    period_est = 2 * float(np.median(np.diff(times)))
+    times = _phase_refine(t, s, env, times, dirs, period_est)
 
-    # Номер полупериода: устойчив к пропущенным переходам (например, из-за потери маркера).
-    k = np.rint((times - times[0]) / (period_est / 2)).astype(int)
-    if np.any(np.diff(k) <= 0):
+    # Номер полупериода — по разностям соседних переходов: устойчиво к пропущенным
+    # переходам (потеря груза), к дрейфу периода и к неравным полупериодам (центр чуть
+    # смещён), чего не даёт округление от первого перехода.
+    steps = np.maximum(np.rint(np.diff(times) / (period_est / 2)), 1).astype(int)
+    k = np.concatenate([[0], np.cumsum(steps)])
+    halves = np.diff(times) / steps
+    irregular = np.std(halves) / np.mean(halves) > MAX_HALF_PERIOD_SPREAD
+    if irregular or np.mean(steps > 1) > MAX_SKIPPED_FRACTION:
         raise AnalysisError("Переходы через равновесие идут нерегулярно — проверьте трекинг.")
 
+    keep = _reject_outliers(times, dirs, k)
+    times, dirs, k = times[keep], dirs[keep], k[keep]
     period, period_se, event_sigma = _crossing_regression(times, dirs, k)
 
     same_dir_values: list[tuple[float, float]] = []
@@ -204,37 +309,76 @@ def analyze_oscillation(t: np.ndarray, x: np.ndarray) -> PeriodAnalysis:
                 same_dir_values.append(((td[j] + td[j + 1]) / 2, td[j + 1] - td[j]))
     same_dir_values.sort()
     values = [v for _, v in same_dir_values]
+    value_times = np.array([tm for tm, _ in same_dir_values])
 
-    span = times[-1] - times[0]
-    if fit and fit.damping > 1e-6 and span > 0:
-        amp_start = fit.amplitude * math.exp(-fit.damping * (times[0] - fit.t_ref))
-        amp_mean = amp_start * (1 - math.exp(-fit.damping * span)) / (fit.damping * span)
-    else:
-        amp_start = amp_mean = float(envelope[0])
+    amps = np.abs(peak_v)
+    damping = None
+    if amps.size >= 3 and np.all(amps > 0):
+        damping = float(-np.polyfit(peak_t, np.log(amps), 1)[0])
+    crossing_env = np.interp(times, t[np.isfinite(env)], env[np.isfinite(env)])
 
     return PeriodAnalysis(
         period=period,
         period_se=period_se,
         event_sigma=event_sigma,
         center=center,
-        amplitude_start=amp_start,
-        amplitude_mean=amp_mean,
-        damping=fit.damping if fit else None,
+        amplitude_start=float(crossing_env[0]),
+        amplitude_mean=float(np.mean(crossing_env)),
+        damping=damping,
         crossing_times=times.tolist(),
         crossing_directions=dirs.tolist(),
         period_values=values,
-        period_value_times=[tm for tm, _ in same_dir_values],
+        period_value_times=value_times.tolist(),
+        period_amplitudes=(
+            np.interp(value_times, times, crossing_env).tolist() if value_times.size else []
+        ),
         period_std=float(np.std(values, ddof=1)) if len(values) >= 2 else None,
-        fit=fit,
+        outliers=int((~keep).sum()),
+        fit=fit_damped_cosine(t, x, period_est, center),
     )
+
+
+def _design(dirs: np.ndarray, k: np.ndarray, quadratic: bool) -> np.ndarray:
+    cols = [np.ones(len(k)), dirs / 2, k.astype(float)]
+    if quadratic:
+        kc = k - k.mean()
+        cols.append(kc.astype(float) ** 2)
+    return np.column_stack(cols)
+
+
+def _reject_outliers(times: np.ndarray, dirs: np.ndarray, k: np.ndarray) -> np.ndarray:
+    """Сбой трекинга даёт момент, далеко выпадающий из регрессии. Отбрасываем такие
+    точки по медианному отклонению (не больше 10 % переходов)."""
+    keep = np.ones(len(times), dtype=bool)
+    if len(times) < 10:
+        return keep
+    budget = max(1, len(times) // 10)
+    for _ in range(budget):
+        design = _design(dirs[keep], k[keep], quadratic=True)
+        coef, *_ = np.linalg.lstsq(design, times[keep], rcond=None)
+        resid = np.full(len(times), 0.0)
+        resid[keep] = times[keep] - design @ coef
+        mad = 1.4826 * float(np.median(np.abs(resid[keep])))
+        worst = int(np.argmax(np.abs(resid) * keep))
+        if mad <= 0 or abs(resid[worst]) <= 5 * mad:
+            break
+        keep[worst] = False
+    return keep
 
 
 def _crossing_regression(
     times: np.ndarray, dirs: np.ndarray, k: np.ndarray
 ) -> tuple[float, float | None, float | None]:
-    """МНК для t = a + b·d + (T/2)·k. Возвращает (T, SE(T), СКО остатков)."""
-    design = np.column_stack([np.ones_like(times), dirs / 2, k.astype(float)])
-    n, p = design.shape
+    """Средний период по регрессии моментов и погрешность одного момента.
+
+    Модель с квадратичным членом поглощает медленный дрейф периода (он реален: период
+    уменьшается вместе с амплитудой), поэтому остаток — это именно погрешность измерения.
+    Средний период на участке — производная dt/dk в середине, умноженная на 2.
+    """
+    n = len(times)
+    quadratic = n >= 8
+    design = _design(dirs, k, quadratic)
+    p = design.shape[1]
     if n <= p:
         same = [(times[j + 2] - times[j]) for j in range(n - 2) if k[j + 2] - k[j] == 2]
         if not same:
@@ -244,4 +388,5 @@ def _crossing_regression(
     resid = times - design @ coef
     sigma = float(math.sqrt(resid @ resid / (n - p)))
     cov = sigma**2 * np.linalg.inv(design.T @ design)
+    # Квадратичный член центрирован, поэтому в середине участка наклон равен coef[2].
     return float(2 * coef[2]), float(2 * math.sqrt(cov[2, 2])), sigma
