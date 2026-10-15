@@ -73,8 +73,12 @@ def replace_auto_segments(video: Video, found: list[Segment], track: Track) -> N
     for seg in [s for s in video.segments if s.auto]:
         video.segments.remove(seg)
 
+    manual = [(s.t_start, s.t_end) for s in video.segments if not s.auto]
     for item in found:
         span = (item.t_start, item.t_end)
+        # Участок, который человек уже задал вручную, не дублируем автоматическим.
+        if any(_overlap(span, m) > 0.5 * (item.t_end - item.t_start) for m in manual):
+            continue
         best = max(previous, key=lambda p: _overlap(span, (p[0], p[1])), default=None)
         inherited = best if best and _overlap(span, (best[0], best[1])) > 0 else None
         segment = VideoSegment(

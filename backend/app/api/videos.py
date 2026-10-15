@@ -53,6 +53,8 @@ from app.services.video_processing import (
 
 router = APIRouter(tags=["videos"])
 
+BOUNDS_TOLERANCE_S = 0.02
+"""Правка границ меньше этого (округление в редакторе) не считается ручной."""
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 CHUNK = 1024 * 1024
 
@@ -354,11 +356,17 @@ def update_segment(
     t_end = changes.get("t_end", segment.t_end)
     if t_end <= t_start:
         raise HTTPException(status_code=422, detail="Конец участка должен быть позже начала")
+    moved = (
+        abs(t_start - segment.t_start) > BOUNDS_TOLERANCE_S
+        or abs(t_end - segment.t_end) > BOUNDS_TOLERANCE_S
+    )
     for key, value in changes.items():
+        if key in ("t_start", "t_end") and not moved:
+            continue  # те же границы (в т.ч. округлённые редактором) — ничего не меняем
         setattr(segment, key, value)
-    if {"t_start", "t_end"} & changes.keys():
+    if moved:
         segment.auto = False  # границы правил человек — при повторном трекинге не трогаем
-    if {"t_start", "t_end", "series_id"} & changes.keys():
+    if moved or "series_id" in changes:
         analyze_into(segment, video, _track_or_409(settings, video), series_lengths(video))
     db.commit()
     return segment_out(segment)

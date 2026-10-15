@@ -122,6 +122,12 @@ def test_full_video_pipeline(client, experiment, series, tmp_path):
     ).json()
     assert narrowed["auto"] is False
     assert narrowed["result"]["periods_observed"] < result["periods_observed"]
+    # Сохранение тех же границ (округлённых редактором) не делает участок «ручным».
+    same = client.patch(
+        f"/api/segments/{segment['id']}",
+        json={"t_start": round(narrowed["t_start"], 2), "t_end": round(narrowed["t_end"], 2)},
+    ).json()
+    assert same["t_start"] == narrowed["t_start"]
     manual = client.post(
         f"/api/videos/{video['id']}/segments", json={"t_start": 11.0, "t_end": 13.9}
     ).json()
