@@ -649,7 +649,9 @@ kbd {
 
 .frame-editor {
   position: relative;
-  width: 100%;
+  /* Вертикальное видео со смартфона не должно растягиваться на несколько экранов. */
+  width: min(100%, calc(75vh * var(--ratio, 1.7778)));
+  margin: 0 auto;
   background: #000;
   border-radius: 8px;
   overflow: hidden;

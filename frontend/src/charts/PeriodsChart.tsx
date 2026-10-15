@@ -9,13 +9,13 @@ import {
   YAxis,
 } from "recharts";
 
-import type { VideoResult } from "../api/types";
+import type { SegmentResult } from "../api/types";
 import { num } from "../lib/format";
 import { LegendItem, TooltipBox } from "./ChartTooltip";
 import { SERIES } from "./series";
 
 /** Каждый отдельный период по видео: видно и случайный разброс, и медленный дрейф с амплитудой. */
-export function PeriodsChart({ result }: { result: VideoResult }) {
+export function PeriodsChart({ result }: { result: SegmentResult }) {
   const data = result.period_values.map((value, i) => ({
     t: result.period_value_times[i] ?? 0,
     ms: (value - result.period) * 1000,

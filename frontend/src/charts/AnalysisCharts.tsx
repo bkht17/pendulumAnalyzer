@@ -39,7 +39,7 @@ interface PointRow {
 function MethodLegend({ theory }: { theory: string }) {
   return (
     <div className="chart-legend">
-      <LegendItem color={SERIES.camera} label="Камера" />
+      <LegendItem color={SERIES.camera} label="Камера (T₀)" />
       <LegendItem color={SERIES.stopwatch} label="Секундомер" />
       <LegendItem color={SERIES.theory} label={theory} kind="dashed" />
     </div>
@@ -70,7 +70,9 @@ export function PeriodVsLengthChart({ analysis }: { analysis: Analysis }) {
     for (const s of analysis.series) {
       if (s.stopwatch)
         sw.push({ x: s.length_cm - DODGE_CM, L: s.length_cm, T: s.stopwatch.summary.mean, err: s.stopwatch.summary.sem ?? 0, method: "stopwatch" });
-      if (s.camera) cam.push({ x: s.length_cm + DODGE_CM, L: s.length_cm, T: s.camera.period.value, err: s.camera.period.sigma ?? 0, method: "camera" });
+      // Камера: T₀ (малые колебания) — именно его описывает кривая 2π√(L/g).
+      const camEstimate = s.camera?.t0 ?? s.camera?.period;
+      if (camEstimate) cam.push({ x: s.length_cm + DODGE_CM, L: s.length_cm, T: camEstimate.value, err: camEstimate.sigma ?? 0, method: "camera" });
     }
     const curve = Array.from({ length: 61 }, (_, i) => {
       const L = domain[0] + ((domain[1] - domain[0]) * i) / 60;
@@ -117,8 +119,9 @@ export function PeriodSquaredChart({ analysis }: { analysis: Analysis }) {
         sw.push({ x: s.length_cm - DODGE_CM, L: s.length_cm, T: T * T, err: 2 * T * (s.stopwatch.summary.sem ?? 0), method: "stopwatch" });
       }
       if (s.camera) {
-        const T = t0(s, s.camera.period.value);
-        cam.push({ x: s.length_cm + DODGE_CM, L: s.length_cm, T: T * T, err: 2 * T * (s.camera.period.sigma ?? 0), method: "camera" });
+        const est = s.camera.t0 ?? { value: t0(s, s.camera.period.value), sigma: s.camera.period.sigma };
+        const T = est.value;
+        cam.push({ x: s.length_cm + DODGE_CM, L: s.length_cm, T: T * T, err: 2 * T * (est.sigma ?? 0), method: "camera" });
       }
     }
     const line = (k: number, b: number) => [

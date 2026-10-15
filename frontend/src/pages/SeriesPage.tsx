@@ -1,25 +1,20 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 
-import { keys, useTrialMutations, useVideoMutations } from "../api/hooks";
+import { useTrialMutations } from "../api/hooks";
 import type { TrialInput } from "../api/types";
 import { Stopwatch } from "../components/Stopwatch";
 import { Empty, ErrorNotice } from "../components/Status";
 import { TrialsTable } from "../components/TrialsTable";
-import { VideoStatusBadge } from "../components/VideoStatusBadge";
-import { VideoUpload } from "../components/VideoUpload";
-import { bytes, DASH, ms, num, pm } from "../lib/format";
+import { VideosCard } from "../components/VideosCard";
+import { DASH, ms, num, pm } from "../lib/format";
 import { useExperimentContext } from "./experimentContext";
 
 export function SeriesPage() {
   const { experiment } = useExperimentContext();
   const seriesId = Number(useParams().seriesId);
-  const navigate = useNavigate();
   const series = experiment.series.find((s) => s.id === seriesId);
   const trials = useTrialMutations(experiment.id);
-  const videos = useVideoMutations(experiment.id);
-  const client = useQueryClient();
 
   const createTrial = trials.create.mutate;
   const addTrial = useCallback(
@@ -73,69 +68,43 @@ export function SeriesPage() {
 
       <section className="card stack">
         <div className="card__title">
-          <h3>Видеозаписи</h3>
+          <h3>Участки видео при этой длине</h3>
+          <span className="muted small">{series.segments.length}</span>
         </div>
-        <VideoUpload
-          seriesId={series.id}
-          onUploaded={(video) => {
-            void client.invalidateQueries({ queryKey: keys.experiment(experiment.id) });
-            navigate(`${base}/videos/${video.id}`);
-          }}
-        />
-        {series.videos.length > 0 && (
+        {series.segments.length === 0 ? (
+          <p className="secondary small" style={{ margin: 0 }}>
+            Пока ни один участок видео не привязан к этой длине. Загрузите видео ниже (если в нём одна серия, она
+            привяжется сама) или привяжите участок на странице видео.
+          </p>
+        ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Файл</th>
-                  <th className="left">Статус</th>
-                  <th>Кадров/с</th>
-                  <th>Длительность</th>
-                  <th>T, с</th>
+                  <th>Видео</th>
+                  <th>Время, с</th>
+                  <th>T средний, с</th>
+                  <th>T₀ (малые колеб.), с</th>
                   <th>Ошибка момента</th>
                   <th>Амплитуда</th>
-                  <th />
                 </tr>
               </thead>
               <tbody>
-                {series.videos.map((v) => (
-                  <tr key={v.id} className={v.excluded ? "excluded" : undefined}>
+                {series.segments.map((seg) => (
+                  <tr key={seg.id} className={seg.excluded ? "excluded" : undefined}>
                     <td>
-                      <Link to={`${base}/videos/${v.id}`}>{v.original_name}</Link>
-                      <div className="muted small">
-                        {v.width}×{v.height} · {bytes(v.size_bytes)}
-                      </div>
+                      <Link to={`${base}/videos/${seg.video_id}`}>{seg.video_name}</Link>
                     </td>
-                    <td className="left">
-                      <VideoStatusBadge video={v} />
-                    </td>
-                    <td>{num(v.timing?.fps_measured ?? v.fps_nominal, 2)}</td>
-                    <td>{num(v.duration_s, 1)} с</td>
-                    <td>{v.result ? pm(v.result.period, v.result.period_se) : DASH}</td>
-                    <td>{ms(v.result?.event_sigma)}</td>
                     <td>
-                      {v.result?.amplitude_mean_deg != null
-                        ? `${num(v.result.amplitude_mean_deg, 1)}°`
+                      {num(seg.t_start, 1)}–{num(seg.t_end, 1)}
+                    </td>
+                    <td>{seg.result ? pm(seg.result.period, seg.result.period_se, 5) : DASH}</td>
+                    <td>{seg.result?.t0 ? pm(seg.result.t0, seg.result.t0_se, 5) : DASH}</td>
+                    <td>{ms(seg.result?.event_sigma)}</td>
+                    <td>
+                      {seg.result?.theta_max_deg != null
+                        ? `${num(seg.result.theta_max_deg, 0)}° → ${num(seg.result.theta_min_deg, 0)}°`
                         : DASH}
-                    </td>
-                    <td className="actions">
-                      <div className="row" style={{ gap: 4, flexWrap: "nowrap" }}>
-                        <Link className="button small" to={`${base}/videos/${v.id}`}>
-                          {v.status === "uploaded" ? "Настроить" : "Открыть"}
-                        </Link>
-                        <button
-                          className="small ghost"
-                          onClick={() => videos.toggleExcluded.mutate({ id: v.id, excluded: !v.excluded })}
-                        >
-                          {v.excluded ? "Вернуть" : "Исключить"}
-                        </button>
-                        <button
-                          className="small ghost danger"
-                          onClick={() => confirm(`Удалить ${v.original_name}?`) && videos.remove.mutate(v.id)}
-                        >
-                          Удалить
-                        </button>
-                      </div>
                     </td>
                   </tr>
                 ))}
@@ -144,6 +113,8 @@ export function SeriesPage() {
           </div>
         )}
       </section>
+
+      <VideosCard experiment={experiment} seriesId={series.id} />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
@@ -11,40 +12,66 @@ import {
   YAxis,
 } from "recharts";
 
-import type { TrackData, VideoResult } from "../api/types";
+import type { Segment, TrackData } from "../api/types";
 import { num } from "../lib/format";
 import { LegendItem, TooltipBox } from "./ChartTooltip";
 import { SERIES } from "./series";
 
-const MAX_POINTS = 2000;
+const MAX_POINTS = 2500;
+const ZOOM_MARGIN_S = 1;
 
 interface Props {
   track: TrackData;
-  result: VideoResult | null;
+  axis: "x" | "y";
+  segments: Segment[];
+  selected: Segment | null;
+  onSelect?: (id: number) => void;
 }
 
-/** Координата маркера от времени + подогнанная затухающая синусоида + моменты прохождения центра. */
-export function TrackChart({ track, result }: Props) {
-  const axis = result?.axis ?? "x";
+interface Row {
+  t: number;
+  pos: number | null;
+  fit: number | null;
+}
+
+/**
+ * Координата груза от времени. Без выбранного участка — вся запись (участки подсвечены),
+ * с выбранным — он крупно, с подогнанной синусоидой и моментами прохождения центра.
+ */
+export function TrackChart({ track, axis, segments, selected, onSelect }: Props) {
+  const range: [number, number] | null = selected
+    ? [selected.t_start - ZOOM_MARGIN_S, selected.t_end + ZOOM_MARGIN_S]
+    : null;
+  const result = selected?.result ?? null;
+
   const data = useMemo(() => {
     const values = axis === "x" ? track.x : track.y;
-    const step = Math.max(1, Math.ceil(track.t.length / MAX_POINTS));
-    const fit = result?.fit;
-    const rows: { t: number; pos: number | null; fit: number | null }[] = [];
-    for (let i = 0; i < track.t.length; i += step) {
+    const lo = selected ? selected.t_start - ZOOM_MARGIN_S : -Infinity;
+    const hi = selected ? selected.t_end + ZOOM_MARGIN_S : Infinity;
+    const idx: number[] = [];
+    for (let i = 0; i < track.t.length; i++) {
       const t = track.t[i]!;
+      if (t >= lo && t <= hi) idx.push(i);
+    }
+    const step = Math.max(1, Math.ceil(idx.length / MAX_POINTS));
+    const fit = selected?.result?.fit;
+    const rows: Row[] = [];
+    for (let j = 0; j < idx.length; j += step) {
+      const i = idx[j]!;
+      const t = track.t[i]!;
+      const inside = selected && t >= selected.t_start && t <= selected.t_end;
       const tr = fit ? t - fit.t_ref : 0;
       rows.push({
         t,
         pos: values[i] ?? null,
-        fit: fit
-          ? fit.center +
-            fit.amplitude * Math.exp(-fit.damping * tr) * Math.cos((2 * Math.PI * tr) / fit.period + fit.phase)
-          : null,
+        fit:
+          fit && inside
+            ? fit.center + fit.amplitude * Math.exp(-fit.damping * tr) * Math.cos((2 * Math.PI * tr) / fit.period + fit.phase)
+            : null,
       });
     }
     return rows;
-  }, [track, result, axis]);
+  }, [track, axis, selected]);
 
   const crossings = useMemo(
     () => (result ? result.crossing_times.map((t) => ({ t, pos: result.center_px })) : []),
@@ -54,9 +81,15 @@ export function TrackChart({ track, result }: Props) {
   return (
     <div>
       <div className="chart-legend">
-        <LegendItem color={SERIES.camera} label={`Положение маркера (${axis}, пиксели)`} kind="line" />
+        <LegendItem color={SERIES.camera} label={`Положение груза (${axis}, пиксели)`} kind="line" />
         {result?.fit && <LegendItem color={SERIES.fit} label="Затухающая синусоида (подгонка)" kind="dashed" />}
         {result && <LegendItem color={SERIES.theory} label="Прохождение равновесия" />}
+        {!selected && segments.length > 0 && (
+          <span>
+            <span className="swatch" style={{ background: "var(--accent-soft)", border: "1px solid var(--accent)" }} />
+            Найденные серии колебаний{onSelect ? " (клик — открыть)" : ""}
+          </span>
+        )}
       </div>
       <div className="chart">
         <ResponsiveContainer width="100%" height="100%">
@@ -65,7 +98,8 @@ export function TrackChart({ track, result }: Props) {
             <XAxis
               dataKey="t"
               type="number"
-              domain={[(min: number) => Math.floor(min), (max: number) => Math.ceil(max)]}
+              domain={range ?? [(min: number) => Math.floor(min), (max: number) => Math.ceil(max)]}
+              allowDataOverflow
               allowDecimals={false}
               tickFormatter={(v: number) => num(v, 0)}
               stroke={SERIES.axis}
@@ -78,16 +112,29 @@ export function TrackChart({ track, result }: Props) {
               tickFormatter={(v: number) => num(v, 0)}
               stroke={SERIES.axis}
             />
+            {!selected &&
+              segments.map((s) => (
+                <ReferenceArea
+                  key={s.id}
+                  x1={s.t_start}
+                  x2={s.t_end}
+                  fill="var(--accent)"
+                  fillOpacity={s.excluded ? 0.04 : 0.12}
+                  stroke="none"
+                  onClick={onSelect ? () => onSelect(s.id) : undefined}
+                  style={onSelect ? { cursor: "pointer" } : undefined}
+                />
+              ))}
             {result && <ReferenceLine y={result.center_px} stroke={SERIES.axis} />}
             <Tooltip
               content={({ active, payload }) => {
-                const row = payload?.[0]?.payload as (typeof data)[number] | undefined;
+                const row = payload?.[0]?.payload as Row | undefined;
                 if (!active || !row || row.pos === undefined) return null;
                 return (
                   <TooltipBox
                     title={`t = ${num(row.t, 3)} с`}
                     rows={[
-                      { color: SERIES.camera, label: "Маркер", value: `${num(row.pos, 1)} px` },
+                      { color: SERIES.camera, label: "Груз", value: `${num(row.pos, 1)} px` },
                       ...(row.fit !== null ? [{ color: SERIES.fit, label: "Подгонка", value: `${num(row.fit, 1)} px` }] : []),
                     ]}
                   />

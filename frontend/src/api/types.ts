@@ -66,15 +66,26 @@ export interface ScaleCalibration {
   distance_cm: number;
 }
 
+export type TrackingMethod = "motion" | "color";
+
 export interface TrackingParams {
-  color: ColorRange;
+  method: TrackingMethod;
+  color: ColorRange | null;
   roi: Roi | null;
   min_area: number;
+  motion_threshold: number;
+  polarity: "auto" | "dark" | "bright";
   t_start: number | null;
   t_end: number | null;
   axis: "auto" | "x" | "y";
   pivot: Point | null;
   scale: ScaleCalibration | null;
+}
+
+export interface TrackInfo {
+  axis: "x" | "y";
+  detection_rate: number;
+  frames: number;
 }
 
 export interface FrameTiming {
@@ -95,7 +106,7 @@ export interface DampedFit {
   rms: number;
 }
 
-export interface VideoResult {
+export interface SegmentResult {
   axis: "x" | "y";
   period: number;
   period_se: number | null;
@@ -103,9 +114,11 @@ export interface VideoResult {
   period_std: number | null;
   periods_observed: number;
   crossings_count: number;
+  outliers: number;
   crossing_times: number[];
   period_values: number[];
   period_value_times: number[];
+  period_amplitudes_deg: number[];
   center_px: number;
   amplitude_start_px: number;
   amplitude_mean_px: number;
@@ -115,15 +128,45 @@ export interface VideoResult {
   fit: DampedFit | null;
   detection_rate: number;
   frames_analyzed: number;
+  length_px: number | null;
+  length_px_source: "pivot" | "arc" | "scale" | null;
+  pivot_px: Point | null;
   px_per_cm: number | null;
   length_from_video_cm: number | null;
+  t0: number | null;
+  t0_se: number | null;
+  amplitude_k: number | null;
+  amplitude_k_se: number | null;
+  theta_min_deg: number | null;
+  theta_max_deg: number | null;
+}
+
+export interface Segment {
+  id: number;
+  video_id: number;
+  video_name: string;
+  series_id: number | null;
+  t_start: number;
+  t_end: number;
+  auto: boolean;
+  excluded: boolean;
+  result: SegmentResult | null;
+  error: string | null;
+}
+
+export interface SegmentPatch {
+  series_id?: number | null;
+  excluded?: boolean;
+  t_start?: number;
+  t_end?: number;
 }
 
 export type VideoStatus = "uploaded" | "queued" | "processing" | "done" | "failed";
 
 export interface Video {
   id: number;
-  series_id: number;
+  experiment_id: number;
+  preferred_series_id: number | null;
   original_name: string;
   size_bytes: number;
   width: number;
@@ -136,7 +179,8 @@ export interface Video {
   error: string | null;
   params: TrackingParams | null;
   timing: FrameTiming | null;
-  result: VideoResult | null;
+  track_info: TrackInfo | null;
+  segments: Segment[];
   excluded: boolean;
   created_at: string;
   processed_at: string | null;
@@ -151,7 +195,7 @@ export interface Series {
   notes: string;
   created_at: string;
   trials: Trial[];
-  videos: Video[];
+  segments: Segment[];
 }
 
 export interface SeriesInput {
@@ -163,6 +207,7 @@ export interface SeriesInput {
 
 export interface ExperimentDetail extends Experiment {
   series: Series[];
+  videos: Video[];
 }
 
 export interface Preview {
@@ -205,13 +250,17 @@ export interface StopwatchStats {
 }
 
 export interface CameraStats {
-  videos: number;
+  segments: number;
   period: Estimate;
-  between_videos: Summary;
+  t0: Estimate | null;
+  between_segments: Summary;
   event_sigma: number | null;
   equivalent_std: number | null;
   period_std: number | null;
   amplitude_deg: number | null;
+  amplitude_min_deg: number | null;
+  amplitude_max_deg: number | null;
+  amplitude_k: Estimate | null;
 }
 
 export interface MethodComparison {
@@ -231,6 +280,7 @@ export interface TheoryRow {
 }
 
 export interface MethodTheory {
+  compared: "t0" | "mean";
   deviation_pct: number;
   z_score: number | null;
   g: Estimate;

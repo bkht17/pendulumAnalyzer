@@ -8,11 +8,12 @@ import { ErrorNotice } from "./Status";
 const ACCEPT = ".mp4,.mov,.m4v,.avi,.mkv,.webm,video/*";
 
 interface Props {
-  seriesId: number;
+  experimentId: number;
+  seriesId?: number;
   onUploaded: (video: Video) => void;
 }
 
-export function VideoUpload({ seriesId, onUploaded }: Props) {
+export function VideoUpload({ experimentId, seriesId, onUploaded }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
@@ -22,7 +23,7 @@ export function VideoUpload({ seriesId, onUploaded }: Props) {
     setError(null);
     setProgress(0);
     try {
-      const video = await api.uploadVideo(seriesId, file, setProgress);
+      const video = await api.uploadVideo(experimentId, file, setProgress, seriesId);
       onUploaded(video);
     } catch (err) {
       setError(err);
@@ -56,7 +57,7 @@ export function VideoUpload({ seriesId, onUploaded }: Props) {
         {progress === null ? (
           <>
             <strong>Перетащите видео сюда</strong> или нажмите, чтобы выбрать файл
-            <div className="small muted">MP4, MOV, AVI, MKV, WEBM · лучше 60 кадр/с, 15–20 с</div>
+            <div className="small muted">MP4, MOV, AVI, MKV, WEBM · лучше 60 кадр/с, камера на штативе</div>
           </>
         ) : (
           <div className="stack">

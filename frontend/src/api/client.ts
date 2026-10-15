@@ -4,7 +4,11 @@ import type {
   Experiment,
   ExperimentDetail,
   ExperimentInput,
+  Point,
   Preview,
+  ScaleCalibration,
+  Segment,
+  SegmentPatch,
   Series,
   SeriesInput,
   TrackData,
@@ -55,6 +59,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 function uploadWithProgress<T>(
   path: string,
   file: File,
+  fields: Record<string, string>,
   onProgress: (fraction: number) => void,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -76,6 +81,7 @@ function uploadWithProgress<T>(
     xhr.onerror = () => reject(new ApiError(0, "Нет связи с сервером"));
     const form = new FormData();
     form.append("file", file);
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
     xhr.send(form);
   });
 }
@@ -103,8 +109,18 @@ export const api = {
     request<Trial>("PATCH", `/trials/${id}`, patch),
   deleteTrial: (id: number) => request<void>("DELETE", `/trials/${id}`),
 
-  uploadVideo: (seriesId: number, file: File, onProgress: (f: number) => void) =>
-    uploadWithProgress<Video>(`/series/${seriesId}/videos`, file, onProgress),
+  uploadVideo: (
+    experimentId: number,
+    file: File,
+    onProgress: (f: number) => void,
+    seriesId?: number,
+  ) =>
+    uploadWithProgress<Video>(
+      `/experiments/${experimentId}/videos`,
+      file,
+      seriesId ? { series_id: String(seriesId) } : {},
+      onProgress,
+    ),
   video: (id: number) => request<Video>("GET", `/videos/${id}`),
   updateVideo: (id: number, patch: { excluded?: boolean }) =>
     request<Video>("PATCH", `/videos/${id}`, patch),
@@ -118,5 +134,12 @@ export const api = {
   startTracking: (id: number, params: TrackingParams) =>
     request<Video>("POST", `/videos/${id}/track`, params),
   track: (id: number) => request<TrackData>("GET", `/videos/${id}/track`),
+  updateGeometry: (id: number, body: { pivot: Point | null; scale: ScaleCalibration | null }) =>
+    request<Video>("PUT", `/videos/${id}/geometry`, body),
   trackCsvUrl: (id: number) => `/api/videos/${id}/track.csv`,
+
+  createSegment: (videoId: number, body: { t_start: number; t_end: number; series_id?: number | null }) =>
+    request<Segment>("POST", `/videos/${videoId}/segments`, body),
+  updateSegment: (id: number, patch: SegmentPatch) => request<Segment>("PATCH", `/segments/${id}`, patch),
+  deleteSegment: (id: number) => request<void>("DELETE", `/segments/${id}`),
 };

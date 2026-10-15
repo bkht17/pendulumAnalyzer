@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
-import type { ExperimentDetail, ExperimentInput, SeriesInput, TrialInput, Video } from "./types";
+import type {
+  ExperimentDetail,
+  ExperimentInput,
+  SegmentPatch,
+  SeriesInput,
+  TrialInput,
+  Video,
+} from "./types";
 
 export const keys = {
   experiments: ["experiments"] as const,
@@ -24,7 +31,7 @@ export function useExperiment(id: number) {
     // Пока какое-то видео обрабатывается, обновляем статусы.
     refetchInterval: (query) => {
       const data = query.state.data as ExperimentDetail | undefined;
-      return data?.series.some((s) => s.videos.some(isBusy)) ? 1000 : false;
+      return data?.videos.some(isBusy) ? 1000 : false;
     },
   });
 }
@@ -124,6 +131,26 @@ export function useTrialMutations(experimentId: number) {
   };
 }
 
+export function useSegmentMutations(experimentId: number, videoId: number) {
+  const client = useQueryClient();
+  const invalidate = useInvalidateExperiment();
+  const onSuccess = async () => {
+    await Promise.all([client.invalidateQueries({ queryKey: keys.video(videoId) }), invalidate(experimentId)]);
+  };
+  return {
+    create: useMutation({
+      mutationFn: (body: { t_start: number; t_end: number; series_id?: number | null }) =>
+        api.createSegment(videoId, body),
+      onSuccess,
+    }),
+    update: useMutation({
+      mutationFn: ({ id, patch }: { id: number; patch: SegmentPatch }) => api.updateSegment(id, patch),
+      onSuccess,
+    }),
+    remove: useMutation({ mutationFn: api.deleteSegment, onSuccess }),
+  };
+}
+
 export function useVideoMutations(experimentId: number) {
   const client = useQueryClient();
   const invalidate = useInvalidateExperiment();
@@ -141,6 +168,11 @@ export function useVideoMutations(experimentId: number) {
     track: useMutation({
       mutationFn: ({ id, params }: { id: number; params: Parameters<typeof api.startTracking>[1] }) =>
         api.startTracking(id, params),
+      onSuccess,
+    }),
+    geometry: useMutation({
+      mutationFn: ({ id, body }: { id: number; body: Parameters<typeof api.updateGeometry>[1] }) =>
+        api.updateGeometry(id, body),
       onSuccess,
     }),
   };

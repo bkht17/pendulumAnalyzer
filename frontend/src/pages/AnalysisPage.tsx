@@ -41,8 +41,9 @@ function ComparisonTable({ analysis }: { analysis: Analysis }) {
             <th>
               <MethodDot method="camera" /> T камера, с
             </th>
+            <th>T₀ камера (малые колеб.), с</th>
             <th>Разброс при том же N, мс</th>
-            <th>Видео</th>
+            <th>Участков видео</th>
             <th>Разница, мс</th>
             <th>Разброс меньше в</th>
             <th>p (F-тест)</th>
@@ -65,8 +66,9 @@ function ComparisonTable({ analysis }: { analysis: Analysis }) {
                 ) : null}
               </td>
               <td>{s.camera ? pm(s.camera.period.value, s.camera.period.sigma, 5) : DASH}</td>
+              <td>{s.camera?.t0 ? pm(s.camera.t0.value, s.camera.t0.sigma, 5) : DASH}</td>
               <td>{ms(s.camera?.equivalent_std)}</td>
-              <td>{s.camera?.videos ?? DASH}</td>
+              <td>{s.camera?.segments ?? DASH}</td>
               <td>
                 {s.comparison
                   ? `${num(s.comparison.difference * 1000, 1)}${s.comparison.difference_sigma ? ` ± ${num(s.comparison.difference_sigma * 1000, 1)}` : ""}`
@@ -116,7 +118,10 @@ function TheoryTable({ analysis }: { analysis: Analysis }) {
               <td>
                 <Agreement theory={s.stopwatch_vs_theory} />
               </td>
-              <td>{pct(s.camera_vs_theory?.deviation_pct, 3, true)}</td>
+              <td title={s.camera_vs_theory?.compared === "t0" ? "T₀ камеры против T₀ теории" : "средний T против теории с поправкой"}>
+                {pct(s.camera_vs_theory?.deviation_pct, 3, true)}
+                {s.camera_vs_theory?.compared === "t0" && <span className="muted small"> (T₀)</span>}
+              </td>
               <td>
                 <Agreement theory={s.camera_vs_theory} />
               </td>
@@ -236,7 +241,8 @@ export function AnalysisPage() {
       <section className="card">
         <h2>Сравнение с теорией T = 2π√(L/g) (п. 8)</h2>
         <p className="secondary small">
-          Отклонение считается относительно теории с поправкой на амплитуду (если угол известен).
+          Для камеры с теорией сравнивается T₀ — период, пересчитанный к малой амплитуде по каждому отдельному
+          периоду; для секундомера — средний период против теории с поправкой на среднюю амплитуду.
           |z| = |ΔT| / σ — согласие в пределах погрешности при |z| &lt; 2. Обычно его ограничивает
           не таймер, а точность длины: ошибка 0,5 см при L = 20 см даёт 1,25 % в периоде.
         </p>

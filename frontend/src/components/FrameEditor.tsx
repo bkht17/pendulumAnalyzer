@@ -172,7 +172,10 @@ export function FrameEditor(props: Props) {
   };
 
   return (
-    <div className={`frame-editor tool-${tool}`} style={{ aspectRatio: `${videoWidth} / ${videoHeight}` }}>
+    <div
+      className={`frame-editor tool-${tool}`}
+      style={{ aspectRatio: `${videoWidth} / ${videoHeight}`, ["--ratio" as string]: videoWidth / videoHeight }}
+    >
       <img src={src} alt="Кадр видео" onLoad={() => setLoaded(true)} draggable={false} />
       {!loaded && (
         <div className="empty muted" style={{ position: "absolute", inset: 0 }}>

@@ -4,7 +4,7 @@ import { Link } from "react-router";
 import { useSeriesMutations } from "../api/hooks";
 import type { Series } from "../api/types";
 import { ErrorNotice } from "../components/Status";
-import { VideoStatusBadge } from "../components/VideoStatusBadge";
+import { VideosCard } from "../components/VideosCard";
 import { DASH, num } from "../lib/format";
 import { useExperimentContext } from "./experimentContext";
 
@@ -13,11 +13,15 @@ const PRESET_LENGTHS = [20, 25, 40, 60, 80, 100];
 function quickStats(series: Series, mainPeriods: number) {
   const trials = series.trials.filter((t) => !t.excluded && t.periods === mainPeriods);
   const swMean = trials.length ? trials.reduce((a, t) => a + t.period_s, 0) / trials.length : null;
-  const done = series.videos.filter((v) => v.status === "done" && !v.excluded && v.result);
-  const camMean = done.length
-    ? done.reduce((a, v) => a + (v.result?.period ?? 0), 0) / done.length
-    : null;
-  return { trials: trials.length, swMean, camMean };
+  const done = series.segments.filter((s) => !s.excluded && s.result);
+  const mean = (values: number[]) => (values.length ? values.reduce((a, v) => a + v, 0) / values.length : null);
+  return {
+    trials: trials.length,
+    swMean,
+    camMean: mean(done.map((s) => s.result!.period)),
+    camT0: mean(done.flatMap((s) => (s.result!.t0 ? [s.result!.t0] : []))),
+    segments: done.length,
+  };
 }
 
 export function MeasurementsPage() {
@@ -65,8 +69,9 @@ export function MeasurementsPage() {
                   <th>σL, см</th>
                   <th>Ручных замеров (N = {experiment.main_periods})</th>
                   <th>T секундомер, с</th>
-                  <th className="left">Видео</th>
+                  <th>Участков видео</th>
                   <th>T камера, с</th>
+                  <th>T₀ камера, с</th>
                   <th />
                 </tr>
               </thead>
@@ -83,17 +88,9 @@ export function MeasurementsPage() {
                       <td>{num(s.length_sigma_cm, 1)}</td>
                       <td>{q.trials || DASH}</td>
                       <td>{num(q.swMean, 4)}</td>
-                      <td className="left">
-                        <div className="row" style={{ gap: 4 }}>
-                          {s.videos.length === 0 && DASH}
-                          {s.videos.map((v) => (
-                            <Link key={v.id} to={`videos/${v.id}`} title={v.original_name}>
-                              <VideoStatusBadge video={v} />
-                            </Link>
-                          ))}
-                        </div>
-                      </td>
+                      <td>{q.segments || DASH}</td>
                       <td>{num(q.camMean, 5)}</td>
+                      <td>{num(q.camT0, 5)}</td>
                       <td className="actions">
                         <div className="row" style={{ gap: 4, flexWrap: "nowrap" }}>
                           <Link className="button small" to={`series/${s.id}`}>
@@ -119,6 +116,8 @@ export function MeasurementsPage() {
           </div>
         )}
       </div>
+
+      <VideosCard experiment={experiment} />
 
       <form className="card stack" onSubmit={submit}>
         <h3>Добавить длину</h3>
