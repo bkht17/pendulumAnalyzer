@@ -1,9 +1,13 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api } from "../api/client";
-import { useSegmentMutations } from "../api/hooks";
+import { keys, useSegmentMutations } from "../api/hooks";
 import type { ExperimentDetail, Segment, Video } from "../api/types";
 import { DASH, num, pm } from "../lib/format";
+import { parseLengths } from "../lib/lengths";
+import { equivalentLength } from "../lib/physics";
+import { EquivalentLength } from "./EquivalentLength";
 import { ErrorNotice } from "./Status";
 
 interface Props {
@@ -15,26 +19,62 @@ interface Props {
 
 const parse = (v: string) => Number(v.replace(",", "."));
 
-/** Длина нити по периоду при малой амплитуде: L = g·T₀²/4π². */
-function lengthFromPeriod(segment: Segment, g: number): number | null {
-  const t0 = segment.result?.t0 ?? segment.result?.period;
-  return t0 ? ((g * t0 * t0) / (4 * Math.PI * Math.PI)) * 100 : null;
-}
+const periodOf = (segment: Segment) => segment.result?.t0 ?? segment.result?.period ?? null;
 
 export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props) {
   const mutations = useSegmentMutations(experiment.id, video.id);
+  const client = useQueryClient();
+  const invalidateExperiment = () => client.invalidateQueries({ queryKey: keys.experiment(experiment.id) });
   const [editing, setEditing] = useState<{ id: number; from: string; to: string } | null>(null);
   const [manual, setManual] = useState({ from: "", to: "" });
   const [creating, setCreating] = useState<number | null>(null);
   const [createError, setCreateError] = useState<unknown>(null);
-  const error = mutations.update.error ?? mutations.create.error ?? mutations.remove.error ?? createError;
+  const error =
+    mutations.update.error ?? mutations.create.error ?? mutations.remove.error ?? mutations.autoAssign.error ?? createError;
+  const [autoResult, setAutoResult] = useState<string | null>(null);
+  const lengthOf = (id: number | null) => experiment.series.find((x) => x.id === id)?.length_cm ?? null;
+  const unassigned = video.segments.filter((x) => x.series_id === null && !x.excluded && x.result).length;
+
+  const [lengthsInput, setLengthsInput] = useState("");
+  const [addingLengths, setAddingLengths] = useState(false);
+  const addLengths = async () => {
+    const existing = new Set(experiment.series.map((x) => x.length_cm));
+    const values = parseLengths(lengthsInput).filter((v) => !existing.has(v));
+    if (values.length === 0) return;
+    setAddingLengths(true);
+    setCreateError(null);
+    try {
+      for (const length_cm of values) await api.createSeries(experiment.id, { length_cm });
+      setLengthsInput("");
+      await invalidateExperiment();
+    } catch (err) {
+      setCreateError(err);
+    } finally {
+      setAddingLengths(false);
+    }
+  };
+
+  const runAutoAssign = () => {
+    const before = new Set(video.segments.filter((x) => x.series_id !== null).map((x) => x.id));
+    mutations.autoAssign.mutate(undefined, {
+      onSuccess: (updated) => {
+        const linked = updated.segments.filter((x) => x.series_id !== null && !before.has(x.id)).length;
+        const left = updated.segments.filter((x) => x.series_id === null && !x.excluded).length;
+        setAutoResult(
+          `Привязано по периоду: ${linked}.` +
+            (left ? ` Не привязано: ${left} — ни одна длина не подходит однозначно, выберите вручную.` : ""),
+        );
+      },
+    });
+  };
 
   const [newLength, setNewLength] = useState<{ segment: Segment; value: string } | null>(null);
 
   const assign = (segment: Segment, value: string) => {
     if (value === "new") {
-      const guess = segment.result?.length_from_video_cm ?? lengthFromPeriod(segment, experiment.g_reference);
-      setNewLength({ segment, value: guess ? num(guess, 1) : "" });
+      // Поле пустое: длину задаёт человек по линейке. Оценки по видео и по периоду —
+      // только подсказки рядом с полем, а не готовое значение.
+      setNewLength({ segment, value: "" });
       return;
     }
     mutations.update.mutate({ id: segment.id, patch: { series_id: value ? Number(value) : null } });
@@ -58,6 +98,12 @@ export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props
 
   const saveBounds = () => {
     if (!editing) return;
+    const original = video.segments.find((x) => x.id === editing.id);
+    const unchanged =
+      original &&
+      Math.abs(parse(editing.from) - original.t_start) < 0.01 &&
+      Math.abs(parse(editing.to) - original.t_end) < 0.01;
+    if (unchanged) return setEditing(null); // ничего не меняли — участок остаётся автоматическим
     mutations.update.mutate(
       { id: editing.id, patch: { t_start: parse(editing.from), t_end: parse(editing.to) } },
       { onSuccess: () => setEditing(null) },
@@ -66,6 +112,47 @@ export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props
 
   return (
     <div className="stack">
+      {video.segments.length > 0 && (
+        <div className="row">
+          <button
+            onClick={runAutoAssign}
+            disabled={!unassigned || experiment.series.length === 0 || mutations.autoAssign.isPending}
+            title={
+              experiment.series.length === 0
+                ? "Сначала добавьте длины (вкладка «Измерения»)"
+                : "Каждый непривязанный участок — к длине, теоретический период которой ближе всего к T₀"
+            }
+          >
+            Привязать по периоду
+          </button>
+          <span className="muted small">
+            {experiment.series.length === 0
+              ? "Сначала добавьте длины, измеренные линейкой:"
+              : `Длины: ${experiment.series.map((x) => num(x.length_cm, 1)).join("; ")} см`}
+          </span>
+          <span className="spacer" />
+          <form
+            className="row"
+            style={{ gap: 4 }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addLengths();
+            }}
+          >
+            <input
+              aria-label="Добавить длины, см"
+              placeholder="60 40 20"
+              style={{ width: 120 }}
+              value={lengthsInput}
+              onChange={(e) => setLengthsInput(e.target.value)}
+            />
+            <button type="submit" className="small" disabled={addingLengths || parseLengths(lengthsInput).length === 0}>
+              Добавить длины
+            </button>
+          </form>
+        </div>
+      )}
+      {autoResult && <div className="notice">{autoResult}</div>}
       {video.segments.length === 0 ? (
         <p className="secondary small">Участков пока нет.</p>
       ) : (
@@ -79,7 +166,9 @@ export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props
                 <th>T средний, с</th>
                 <th>T₀ (малые колеб.), с</th>
                 <th>Амплитуда</th>
-                <th>L по T₀, см</th>
+                <th title="Длина идеального маятника с таким T₀: L = g·T₀²/4π². Это не измерение, а оценка по периоду; в скобках — отличие от длины серии">
+                  L по периоду, см
+                </th>
                 <th className="left">Длина серии</th>
                 <th />
               </tr>
@@ -137,7 +226,9 @@ export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props
                           ? `${num(r.amplitude_start_px, 0)} px`
                           : DASH}
                     </td>
-                    <td>{num(lengthFromPeriod(s, experiment.g_reference), 1)}</td>
+                    <td>
+                      <EquivalentLength t0={periodOf(s)} g={experiment.g_reference} measured={lengthOf(s.series_id)} />
+                    </td>
                     <td className="left">
                       <select
                         value={s.series_id ?? ""}
@@ -202,11 +293,15 @@ export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props
           }}
         >
           <div>
-            Новая длина для участка {num(newLength.segment.t_start, 1)}–{num(newLength.segment.t_end, 1)} с.{" "}
-            {newLength.segment.result?.length_from_video_cm != null
-              ? "Подставлена длина нити по видео (дуга + масштаб)."
-              : "Подставлена длина по периоду — это только подсказка: g по ней считать нельзя."}{" "}
-            Введите длину, измеренную линейкой до центра груза.
+            Новая длина для участка {num(newLength.segment.t_start, 1)}–{num(newLength.segment.t_end, 1)} с. Введите
+            длину, измеренную линейкой.{" "}
+            <span className="muted">
+              Для сверки: по периоду ≈{" "}
+              {num(periodOf(newLength.segment) && equivalentLength(periodOf(newLength.segment)!, experiment.g_reference), 1)} см
+              {newLength.segment.result?.length_from_video_cm != null &&
+                `, по видео (дуга + масштаб) ≈ ${num(newLength.segment.result.length_from_video_cm, 1)} см`}
+              . Эффективная длина обычно на 1–3 см больше измеренной — это нормально.
+            </span>
           </div>
           <div className="form-row">
             <label className="field">
@@ -214,6 +309,7 @@ export function SegmentsPanel({ video, experiment, selectedId, onSelect }: Props
               <input
                 inputMode="decimal"
                 autoFocus
+                placeholder="например, 60"
                 value={newLength.value}
                 onChange={(e) => setNewLength({ ...newLength, value: e.target.value })}
               />

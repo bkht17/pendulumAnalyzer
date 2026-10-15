@@ -148,6 +148,7 @@ export function useSegmentMutations(experimentId: number, videoId: number) {
       onSuccess,
     }),
     remove: useMutation({ mutationFn: api.deleteSegment, onSuccess }),
+    autoAssign: useMutation({ mutationFn: () => api.autoAssign(videoId), onSuccess }),
   };
 }
 

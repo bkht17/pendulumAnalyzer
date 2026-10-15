@@ -1,8 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router";
 
-import { useTrialMutations } from "../api/hooks";
+import { useSeriesMutations, useTrialMutations } from "../api/hooks";
 import type { TrialInput } from "../api/types";
+import { LengthEditor } from "../components/LengthEditor";
 import { Stopwatch } from "../components/Stopwatch";
 import { Empty, ErrorNotice } from "../components/Status";
 import { TrialsTable } from "../components/TrialsTable";
@@ -15,6 +16,8 @@ export function SeriesPage() {
   const seriesId = Number(useParams().seriesId);
   const series = experiment.series.find((s) => s.id === seriesId);
   const trials = useTrialMutations(experiment.id);
+  const seriesMutations = useSeriesMutations(experiment.id);
+  const [editingLength, setEditingLength] = useState(false);
 
   const createTrial = trials.create.mutate;
   const addTrial = useCallback(
@@ -30,12 +33,29 @@ export function SeriesPage() {
       <div className="breadcrumbs">
         <Link to={base}>Измерения</Link> / L = {num(series.length_cm, 1)} см
       </div>
-      <h2>
-        Длина L = {num(series.length_cm, 1)} ± {num(series.length_sigma_cm, 1)} см
-        {series.amplitude_deg !== null && (
-          <span className="secondary"> · угол ≈ {num(series.amplitude_deg, 0)}°</span>
-        )}
-      </h2>
+      {editingLength ? (
+        <LengthEditor
+          series={series}
+          busy={seriesMutations.update.isPending}
+          onCancel={() => setEditingLength(false)}
+          onSave={(patch) =>
+            seriesMutations.update.mutate({ id: series.id, patch }, { onSuccess: () => setEditingLength(false) })
+          }
+        />
+      ) : (
+        <div className="row">
+          <h2 style={{ margin: 0 }}>
+            Длина L = {num(series.length_cm, 1)} ± {num(series.length_sigma_cm, 1)} см
+            {series.amplitude_deg !== null && (
+              <span className="secondary"> · угол ≈ {num(series.amplitude_deg, 0)}°</span>
+            )}
+          </h2>
+          <button className="small" onClick={() => setEditingLength(true)}>
+            ✎ Исправить длину
+          </button>
+        </div>
+      )}
+      {seriesMutations.update.isError && <ErrorNotice error={seriesMutations.update.error} />}
 
       <div className="grid-2">
         <section className="card">

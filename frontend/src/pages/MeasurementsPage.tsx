@@ -4,6 +4,8 @@ import { Link } from "react-router";
 import { useSeriesMutations } from "../api/hooks";
 import type { Series } from "../api/types";
 import { ErrorNotice } from "../components/Status";
+import { EquivalentLength } from "../components/EquivalentLength";
+import { LengthEditor } from "../components/LengthEditor";
 import { VideosCard } from "../components/VideosCard";
 import { DASH, num } from "../lib/format";
 import { useExperimentContext } from "./experimentContext";
@@ -26,7 +28,8 @@ function quickStats(series: Series, mainPeriods: number) {
 
 export function MeasurementsPage() {
   const { experiment } = useExperimentContext();
-  const { create, remove } = useSeriesMutations(experiment.id);
+  const { create, update, remove } = useSeriesMutations(experiment.id);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [length, setLength] = useState("");
   const [sigma, setSigma] = useState("0.3");
   const [angle, setAngle] = useState("");
@@ -72,6 +75,9 @@ export function MeasurementsPage() {
                   <th>Участков видео</th>
                   <th>T камера, с</th>
                   <th>T₀ камера, с</th>
+                  <th title="Длина идеального маятника с таким T₀: L = g·T₀²/4π². Не измерение, а оценка по периоду">
+                    L по периоду, см
+                  </th>
                   <th />
                 </tr>
               </thead>
@@ -80,27 +86,53 @@ export function MeasurementsPage() {
                   const q = quickStats(s, experiment.main_periods);
                   return (
                     <tr key={s.id}>
-                      <td>
-                        <Link to={`series/${s.id}`}>
-                          <strong>{num(s.length_cm, 1)}</strong>
-                        </Link>
-                      </td>
-                      <td>{num(s.length_sigma_cm, 1)}</td>
+                      {editingId === s.id ? (
+                        <td colSpan={2}>
+                          <LengthEditor
+                            series={s}
+                            busy={update.isPending}
+                            onCancel={() => setEditingId(null)}
+                            onSave={(patch) =>
+                              update.mutate({ id: s.id, patch }, { onSuccess: () => setEditingId(null) })
+                            }
+                          />
+                        </td>
+                      ) : (
+                        <>
+                          <td>
+                            <Link to={`series/${s.id}`}>
+                              <strong>{num(s.length_cm, 1)}</strong>
+                            </Link>
+                          </td>
+                          <td>{num(s.length_sigma_cm, 1)}</td>
+                        </>
+                      )}
                       <td>{q.trials || DASH}</td>
                       <td>{num(q.swMean, 4)}</td>
                       <td>{q.segments || DASH}</td>
                       <td>{num(q.camMean, 5)}</td>
                       <td>{num(q.camT0, 5)}</td>
+                      <td>
+                        <EquivalentLength t0={q.camT0} g={experiment.g_reference} measured={s.length_cm} />
+                      </td>
                       <td className="actions">
                         <div className="row" style={{ gap: 4, flexWrap: "nowrap" }}>
                           <Link className="button small" to={`series/${s.id}`}>
                             Открыть
                           </Link>
                           <button
+                            className="small ghost icon"
+                            title="Исправить длину"
+                            aria-label="Исправить длину"
+                            onClick={() => setEditingId(s.id)}
+                          >
+                            ✎
+                          </button>
+                          <button
                             className="small ghost danger"
-                            title="Удалить длину вместе с замерами и видео"
+                            title="Удалить длину вместе с ручными замерами (видео останутся, участки отвяжутся)"
                             onClick={() => {
-                              if (confirm(`Удалить длину ${s.length_cm} см со всеми измерениями?`))
+                              if (confirm(`Удалить длину ${s.length_cm} см и её ручные замеры?`))
                                 remove.mutate(s.id);
                             }}
                           >

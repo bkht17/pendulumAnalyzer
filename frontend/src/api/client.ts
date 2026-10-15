@@ -134,6 +134,7 @@ export const api = {
   startTracking: (id: number, params: TrackingParams) =>
     request<Video>("POST", `/videos/${id}/track`, params),
   track: (id: number) => request<TrackData>("GET", `/videos/${id}/track`),
+  autoAssign: (id: number) => request<Video>("POST", `/videos/${id}/auto-assign`),
   updateGeometry: (id: number, body: { pivot: Point | null; scale: ScaleCalibration | null }) =>
     request<Video>("PUT", `/videos/${id}/geometry`, body),
   trackCsvUrl: (id: number) => `/api/videos/${id}/track.csv`,

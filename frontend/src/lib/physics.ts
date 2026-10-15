@@ -11,3 +11,8 @@ export function logspace(from: number, to: number, count: number): number[] {
   const b = Math.log(to);
   return Array.from({ length: count }, (_, i) => Math.exp(a + ((b - a) * i) / (count - 1)));
 }
+
+/** L = g·T₀²/4π² (в сантиметрах) — длина идеального маятника с таким периодом. */
+export function equivalentLength(t0: number, g: number): number {
+  return ((g * t0 * t0) / (4 * Math.PI * Math.PI)) * 100;
+}
