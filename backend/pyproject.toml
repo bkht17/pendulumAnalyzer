@@ -1,0 +1,40 @@
+[project]
+name = "pendulum-lab"
+version = "0.1.0"
+description = "«Секундомер против камеры»: измерение периода математического маятника вручную и по видео"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.143",
+    "uvicorn[standard]>=0.54",
+    "python-multipart>=0.0.32",
+    "sqlalchemy>=2.0",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "opencv-python-headless>=4.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "httpx2>=2.13",
+    "ruff>=0.17",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # кириллица в строках и комментариях — норма для этого проекта
