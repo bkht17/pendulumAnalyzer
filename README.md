@@ -1,46 +1,56 @@
-# Секундомер против камеры
+# Stopwatch vs Camera
 
-Веб-приложение для исследовательского проекта: период математического маятника измеряется
-двумя способами, вручную секундомером и автоматически по видео (трекинг цветного маркера
-в OpenCV). Затем методы сравниваются между собой и с формулой T = 2π√(L/g).
+A web app for a school research project. It measures the period of a simple pendulum in two
+ways, by hand with a stopwatch and automatically from video (OpenCV tracking). It then compares
+the two methods with each other and with the formula T = 2π√(L/g).
 
-Что умеет:
+The user interface is in Russian. Labels quoted below are given in Russian with an English
+translation.
 
-- **Встроенный секундомер** (пробел — старт/стоп, Enter — сохранить) и ручной ввод времени
-  с внешнего секундомера. Замеры, где, скорее всего, сбились со счёта колебаний, помечаются
-  автоматически.
-- **Трекинг без маркера.** Груз находится вычитанием фона, поэтому подходит и стальной шарик.
-  Для цветного маркера есть второй метод, по цвету HSV. Маска показывается поверх кадра до
-  запуска, трекинг идёт в фоне с прогрессом.
-- **Длинная запись с несколькими сериями.** Программа сама находит участки свободных колебаний
-  без рук, например четыре длины нити в одном 5-минутном видео. Каждый участок привязывается
-  к своей длине, границы можно поправить вручную.
-- **Период по видео с субкадровой точностью.** Моменты берутся при прохождении положения
-  равновесия и уточняются фазовой подгонкой по всей центральной части полуколебания. Через
-  них проводится регрессия, сбои трекинга отбрасываются. Правильно обрабатываются видео
-  с переменной частотой кадров.
-- **Учёт амплитуды.** Точка подвеса и длина нити находятся по дуге траектории без клика.
-  Каждый отдельный период приводится к малой амплитуде, T₀ = T / (1 + θ²/16 + …), а
-  коэффициент 1/16 проверяется подгонкой. Поэтому с формулой можно сравнивать и опыты
-  с отклонением 20–40°.
-- **Анализ по пунктам 7–10 плана проекта**: сравнение разброса методов (F-тест), сравнение
-  с теорией с поправкой на амплитуду, g по наклону графика T²(L) с оценкой неучтённой добавки
-  к длине, проверка отношения периодов для длин 1:4, зависимость ошибки секундомера от N.
-  Выводы формулируются автоматически.
-- Экспорт таблицы в CSV (сразу открывается в русскоязычном Excel), печать или PDF, скачивание
-  траектории маркера.
-- **Демо-режим**: синтетические видео маятника с известным периодом. Весь путь обработки можно
-  посмотреть до реальной съёмки.
+Features:
 
-## Быстрый старт
+- **Built-in stopwatch** (Space starts and stops, Enter saves), plus manual entry of times from
+  an external stopwatch. Trials where the oscillation count was probably lost are flagged
+  automatically.
+- **Marker-free tracking.** The bob is found by background subtraction, so a plain steel ball
+  works. A second method tracks a coloured marker by HSV colour. The detection mask is shown
+  over the frame before you start, and tracking runs in the background with a progress bar.
+- **Long recordings with several runs.** The app finds stretches of free oscillation without
+  hands in the frame on its own, for example four string lengths in one 5-minute video. Each
+  run is linked to its own length, and its bounds can be adjusted by hand.
+- **Measured lengths stay in control.** Lengths can be edited inline, a list such as `60 40 20`
+  can be added in one go, and the «Привязать по периоду» ("Match by period") button links runs
+  to the closest length. The «L по периоду» ("L from period") column shows the length of an
+  ideal pendulum with the measured period. It is an estimate, not a measurement: the
+  difference from the ruler length shows where the real centre of oscillation is (usually
+  1–3 cm lower).
+- **Sub-frame period from video.** Timestamps are taken where the bob passes the equilibrium
+  position and are refined by a phase fit over the whole central part of each half-swing. A
+  regression runs through them, and tracking glitches are rejected. Variable-frame-rate videos
+  are handled correctly.
+- **Amplitude correction.** The pivot point and string length come from the arc of the
+  trajectory, with no clicks needed. Every single period is reduced to small amplitude,
+  T₀ = T / (1 + θ²/16 + …), and the 1/16 coefficient is checked by a fit. This makes runs swung
+  at 20–40° comparable with the formula too.
+- **Analysis following items 7–10 of the project plan**: comparison of the methods' spread
+  (F-test), comparison with theory including the amplitude correction, g from the slope of
+  T²(L) with an estimate of the unaccounted length offset, the period ratio check for lengths
+  in a 1:4 ratio, and the dependence of stopwatch error on N. Conclusions are written
+  automatically.
+- CSV export of the tables (opens directly in Excel with a Russian locale), print or PDF, and
+  download of the bob trajectory.
+- **Demo mode**: synthetic pendulum videos with a known period, to walk through the whole
+  pipeline before filming anything.
 
-Нужны Python ≥ 3.11 (проверено на 3.14) и Node.js ≥ 20 (проверено на 24).
+## Quick start
+
+Requires Python ≥ 3.11 (tested on 3.14) and Node.js ≥ 20 (tested on 24).
 
 ```bash
 make install
 ```
 
-Разработка: два терминала, интерфейс на http://localhost:5173
+Development uses two terminals; the UI is at http://localhost:5173.
 
 ```bash
 make dev-backend
@@ -50,78 +60,86 @@ make dev-backend
 make dev-frontend
 ```
 
-Одно приложение (API + собранный интерфейс) на http://localhost:8000:
+A single app (API plus the built UI) at http://localhost:8000:
 
 ```bash
 make run
 ```
 
-Дальше нажмите **«Создать демо-эксперимент»** на главной. Документация API (Swagger)
-доступна по адресу http://localhost:8000/docs.
+Then click **«Создать демо-эксперимент»** ("Create demo experiment") on the home page. API
+documentation (Swagger) is at http://localhost:8000/docs.
 
-Данные (SQLite и загруженные видео) лежат в `data/`. Путь меняется переменной окружения
-`PENDULUM_DATA_DIR`. Другие настройки: `PENDULUM_MAX_UPLOAD_MB` (по умолчанию 1024)
-и `PENDULUM_TRACKING_WORKERS` (2).
+Data (SQLite and uploaded videos) is stored in `data/`. Set `PENDULUM_DATA_DIR` to move it.
+Other settings: `PENDULUM_MAX_UPLOAD_MB` (default 1024) and `PENDULUM_TRACKING_WORKERS`
+(default 2).
 
-## Как пользоваться на эксперименте
+## Running an experiment
 
-1. Создайте эксперимент. В «Настройках» укажите g для своего города и основное число
-   колебаний N (по умолчанию 10).
-2. Добавьте длины (кнопки 20/25/40/60/80/100 см). Длину измеряйте до **центра** груза.
-3. На странице длины включите запись на телефоне и одновременно делайте замеры встроенным
-   секундомером. Нажимать нужно в момент прохождения нижней точки. Нужно 10 и более замеров
-   на каждую длину.
-4. Загрузите видео. Одна длинная запись со всеми сериями подходит. Метод «Движение» не требует
-   маркера. При желании обведите рамкой зону качания (захватите дугу всех серий) и отметьте
-   масштаб по линейке в кадре. Запустите трекинг.
-5. Привяжите найденные участки к длинам. Если масштаб или точку подвеса поменяли потом,
-   нажмите «Применить подвес и масштаб»: пересчёт идёт по сохранённой траектории, без
-   повторного трекинга.
-6. Вкладка «Анализ и выводы» содержит таблицы, графики и готовые формулировки для отчёта.
+1. Create an experiment. In «Настройки» ("Settings"), set g for your city and the main number
+   of oscillations N (default 10).
+2. Add the lengths you measured with a ruler, for example `60 40 20`. Measure to the **centre**
+   of the bob.
+3. On a length's page, start recording on the phone and take readings with the built-in
+   stopwatch at the same time. Press when the bob passes the lowest point. Take 10 or more
+   readings per length.
+4. Upload the video. One long recording with all the runs is fine. The «Движение» ("Motion")
+   method needs no marker. Optionally draw a box around the swing area (cover the arc of every
+   run) and mark the scale from a ruler in the frame. Start tracking.
+5. Click «Привязать по периоду» ("Match by period") or pick a length for each run by hand. If
+   you change the scale or the pivot point later, click «Применить подвес и масштаб» ("Apply
+   pivot and scale"); this recalculates from the saved trajectory without tracking again.
+6. The «Анализ и выводы» ("Analysis and conclusions") tab has the tables, charts and
+   ready-made wording for the report.
 
-Подробная методика с обоснованием есть в самом приложении (раздел «Методика»).
+The full method and its reasoning are in the app itself, in the «Методика» ("Method")
+section.
 
-## Архитектура
+## Architecture
 
 ```
 backend/                     FastAPI + SQLAlchemy 2 + SQLite
-  app/science/               чистые функции без веба — их удобно тестировать и показывать на защите
-    tracking.py              OpenCV: фон (медиана/перцентиль/с вырезанным грузом) или HSV-маска → пятно → центр
-    pipeline.py              два прохода: трекинг → поиск серий → повторный трекинг серий с чистым фоном
-    segments.py              поиск участков свободных колебаний в длинной записи
-    geometry.py              точка подвеса и длина нити по дуге траектории (устойчивая подгонка окружности)
-    periods.py               переходы через равновесие, фазовое уточнение, регрессия с дрейфом, выбросы
-    physics.py               формулы, поправка на амплитуду, T₀ по отдельным периодам, погрешности
-    stats.py                 сводная статистика, взвешенный МНК, F-тест, выбросы по MAD
-    synthetic.py             генератор видео маятника (нелинейное уравнение, известный период)
-  app/services/              анализ эксперимента, фоновая очередь трекинга, демо-данные
-  app/api/                   REST: эксперименты, длины, замеры, видео (загрузка, кадр, превью, трекинг)
-  tests/                     pytest: наука, трекинг по синтетическому видео, API end-to-end
+  app/science/               pure functions with no web code: easy to test and to show at the defence
+    tracking.py              OpenCV: background (median/percentile/bob masked out) or HSV mask → blob → centre
+    pipeline.py              two passes: tracking → run detection → re-tracking each run with a clean background
+    segments.py              finding stretches of free oscillation in a long recording
+    geometry.py              pivot point and string length from the trajectory arc (robust circle fit)
+    periods.py               equilibrium crossings, phase refinement, regression with drift, outliers
+    physics.py               formulas, amplitude correction, T₀ from single periods, uncertainties
+    stats.py                 summary statistics, weighted least squares, F-test, MAD outliers
+    synthetic.py             pendulum video generator (nonlinear equation, known period)
+  app/services/              experiment analysis, background tracking queue, run matching, demo data
+  app/api/                   REST: experiments, lengths, trials, videos (upload, frame, preview, tracking), runs
+  tests/                     pytest: science, tracking on synthetic video, end-to-end API
 frontend/                    React 19 + TypeScript + Vite 8 + TanStack Query + Recharts
-  src/pages/                 эксперименты, измерения, длина, видео, анализ, настройки, методика
-  src/components/            секундомер, редактор кадра (canvas), таблица замеров, загрузка
-  src/charts/                графики трекинга и анализа (палитра проверена на дальтонизм)
+  src/pages/                 experiments, measurements, length, video, analysis, settings, method
+  src/components/            stopwatch, frame editor (canvas), trials table, run table, upload
+  src/charts/                tracking and analysis charts (palette checked for colour blindness)
 ```
 
-Ключевые решения:
+Key decisions:
 
-- **Фоновая обработка через пул потоков**, без Celery и Redis. OpenCV отпускает GIL, а для
-  локального приложения на одного пользователя отдельный брокер избыточен. Статус и прогресс
-  хранятся в БД. После перезапуска сервера незавершённые задачи помечаются как прерванные.
-- **Время кадра берётся из контейнера** (`CAP_PROP_POS_MSEC`). Проверено, что OpenCV 5
-  отдаёт точные метки и на VFR-видео.
-- **Два прохода трекинга.** Медианный фон портит сам груз, если его держат перед запуском или
-  если амплитуда меньше его диаметра. Поэтому каждая найденная серия трекается повторно с фоном,
-  построенным только по её кадрам, а при малой амплитуде ещё и с вырезанным грузом.
-- **Схема базы версионируется** (`PRAGMA user_version`). Несовместимая старая база и каталог
-  видео не удаляются, а откладываются в `*.bak`.
-- **Честное сравнение методов** идёт через погрешность фиксации одного момента σ. Ошибка периода
-  по N колебаниям у обоих методов равна √2·σ/N, поэтому длина видеозаписи не влияет на вывод.
-- **Таблицы создаются через `create_all`, без Alembic**. Для локальной SQLite-базы этого
-  достаточно. Если схема начнёт меняться часто, стоит добавить миграции.
-- **TypeScript 6.0, а не 7**: typescript-eslint пока поддерживает только версии < 6.1.
+- **Background processing uses a thread pool**, not Celery and Redis. OpenCV releases the GIL,
+  and a separate broker is overkill for a local single-user app. Status and progress live in
+  the database. After a server restart, unfinished jobs are marked as interrupted.
+- **Frame times come from the container** (`CAP_PROP_POS_MSEC`). OpenCV 5 was checked to
+  return exact timestamps for variable-frame-rate video as well.
+- **Two tracking passes.** The bob spoils a median background if it is held still before
+  release, or if the amplitude is smaller than its diameter. So every detected run is tracked
+  again with a background built from that run's frames only, and for small amplitudes with the
+  bob masked out as well.
+- **Runs are matched to lengths by period with a margin.** Measured lengths are usually
+  2–3 cm shorter than the effective pendulum length, so lengths closer than about 6 % are
+  left for the user to assign.
+- **The database schema is versioned** (`PRAGMA user_version`). An incompatible old database
+  and its videos folder are not deleted but moved to `*.bak`.
+- **The methods are compared fairly** through σ, the uncertainty of timing a single event. For
+  both methods the error of a period over N oscillations is √2·σ/N, so the length of the video
+  does not affect the conclusion.
+- **Tables are created with `create_all`, without Alembic.** That is enough for a local
+  SQLite database. If the schema starts changing often, migrations are worth adding.
+- **TypeScript 6.0, not 7**: typescript-eslint supports only versions below 6.1 for now.
 
-## Тесты и проверки
+## Tests and checks
 
 ```bash
 make test
@@ -131,15 +149,20 @@ make test
 make lint
 ```
 
-Тесты бэкенда генерируют видео маятника с известным периодом, в том числе со сценарием «груз
-держат 9 секунд перед запуском». Проверяется, что трекинг (с маркером и без) ошибается меньше
-чем на 1 px, период совпадает с теорией в пределах 0,03 %, поиск серий находит запуски между
-«руками» и толчками, по дуге восстанавливаются подвес и длина нити, а полный демо-эксперимент
-восстанавливает g и заложенную ошибку длины 0,8 см.
+The backend tests generate pendulum videos with a known period, including a case where the
+bob is held for 9 seconds before release. They check that tracking (with and without a marker)
+is off by less than 1 px, that the period matches theory within 0.03 %, that run detection
+finds releases between hand movements and pushes, that the pivot and string length are
+recovered from the arc, that runs from a real recording match their measured lengths, and that
+the full demo experiment recovers g and the built-in 0.8 cm length error.
 
-## Проверка на реальной записи
+## Check on a real recording
 
-`IMG_9685.MOV`: iPhone, 30 кадр/с, HEVC, 5,5 мин, стальной шарик без маркера, четыре длины нити.
-Программа без настройки нашла 6 участков и оценила ошибку фиксации момента в 0,6–1,5 мс.
-У человека с секундомером она обычно 30–60 мс. Два независимых запуска одной длины дали средние
-периоды 1,59217 и 1,59229 с, после приведения к малой амплитуде T₀ совпадают в пределах погрешности.
+`IMG_9685.MOV`: iPhone, 30 fps, HEVC, 5.5 min, a steel ball without a marker, string lengths
+60, 40 and 20 cm plus one shorter run. With no setup, the app found 6 runs and estimated the
+single-event timing error at 0.6–1.5 ms. A person with a stopwatch is typically at 30–60 ms.
+Two independent releases at 60 cm gave mean periods of 1.59217 and 1.59229 s; after reduction
+to small amplitude, their T₀ values agree within the uncertainty. «Привязать по периоду»
+("Match by period") linked all five runs to the right lengths. The effective length came out
+2.4–3.2 cm longer than the ruler length (the centre of the ball, the eyelet and the bend of the
+string over the hook).
