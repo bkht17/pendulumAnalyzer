@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Response, status
 
-from app.api.deps import DbSession, get_or_404
+from app.api.deps import AppSettings, DbSession, get_or_404
 from app.api.serializers import series_out, trial_out
 from app.models import Series, StopwatchTrial
 from app.schemas import SeriesOut, SeriesPatch, TrialIn, TrialOut, TrialPatch
+from app.services.segments import analyze_into, load_track, series_lengths
 
 router = APIRouter(tags=["series"])
 
@@ -16,10 +17,21 @@ def get_series(series_id: int, db: DbSession) -> SeriesOut:
 
 
 @router.patch("/series/{series_id}", response_model=SeriesOut)
-def update_series(series_id: int, payload: SeriesPatch, db: DbSession) -> SeriesOut:
+def update_series(
+    series_id: int, payload: SeriesPatch, db: DbSession, settings: AppSettings
+) -> SeriesOut:
     series = get_or_404(db, Series, series_id, "Серия")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    for key, value in changes.items():
         setattr(series, key, value)
+    if "length_cm" in changes:
+        # Длина участвует в пересчёте угла амплитуды (если подвес известен только по
+        # масштабу) — пересчитываем привязанные участки по сохранённым траекториям.
+        db.flush()
+        for segment in series.segments:
+            track = load_track(settings.videos_dir, segment.video)
+            if track is not None:
+                analyze_into(segment, segment.video, track, series_lengths(segment.video))
     db.commit()
     return series_out(series)
 

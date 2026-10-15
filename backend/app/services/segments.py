@@ -8,6 +8,7 @@ import numpy as np
 
 from app.models import Video, VideoSegment
 from app.schemas import TrackingParamsIn
+from app.science import physics
 from app.science.periods import AnalysisError
 from app.science.segments import Segment
 from app.services.video_processing import (
@@ -100,3 +101,50 @@ def replace_auto_segments(video: Video, found: list[Segment], track: Track) -> N
     if len(auto) == 1 and auto[0].series_id is None and video.preferred_series_id:
         auto[0].series_id = video.preferred_series_id
         analyze_into(auto[0], video, track, lengths)
+
+
+MATCH_TOLERANCE = 0.12
+"""Насколько (относительно) период участка может отличаться от теоретического для длины."""
+MATCH_MARGIN = 0.03
+"""Вторая по близости длина должна отличаться по периоду хотя бы на 3 % (≈ 6 % по длине) —
+иначе длины ближе, чем обычная разница «измеренная/эффективная», и решать должен человек."""
+
+
+def match_series(segment: VideoSegment, lengths: dict[int, float], g: float) -> int | None:
+    """Длина, к которой участок подходит по периоду, или None, если выбор неочевиден.
+
+    Сравнивается T₀ участка (без влияния амплитуды) с 2π√(L/g). Длины, измеренные
+    линейкой, обычно немного меньше эффективной длины маятника (центр качания ниже
+    точки, до которой мерили), поэтому допуск взят с запасом, а неоднозначные случаи
+    оставляются человеку."""
+    result = segment.result
+    if not result or not lengths:
+        return None
+    period = result.get("t0") or result["period"]
+    errors = sorted(
+        (abs(period / physics.period_small_angle(length / 100, g) - 1), series_id)
+        for series_id, length in lengths.items()
+        if length > 0
+    )
+    best_error, best_id = errors[0]
+    if best_error > MATCH_TOLERANCE:
+        return None
+    if len(errors) > 1 and errors[1][0] - best_error < MATCH_MARGIN:
+        return None
+    return best_id
+
+
+def auto_assign(video: Video, track: Track) -> list[int]:
+    """Привязать непривязанные участки к длинам по периоду. Возвращает id привязанных."""
+    lengths = series_lengths(video)
+    g = video.experiment.g_reference
+    assigned = []
+    for segment in video.segments:
+        if segment.series_id is not None or segment.excluded:
+            continue
+        series_id = match_series(segment, lengths, g)
+        if series_id is not None:
+            segment.series_id = series_id
+            analyze_into(segment, video, track, lengths)
+            assigned.append(segment.id)
+    return assigned

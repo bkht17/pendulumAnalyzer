@@ -43,7 +43,7 @@ from app.science.tracking import (
     read_frame_at,
     suggest_color_range,
 )
-from app.services.segments import analyze_into, load_track, series_lengths
+from app.services.segments import analyze_into, auto_assign, load_track, series_lengths
 from app.services.video_processing import (
     TRACK_FILE,
     read_track_csv,
@@ -292,6 +292,15 @@ def download_track(video_id: int, db: DbSession, settings: AppSettings) -> FileR
         raise HTTPException(status_code=404, detail="Траектория ещё не построена")
     stem = Path(video.original_name).stem
     return FileResponse(path, media_type="text/csv", filename=f"{stem}_track.csv")
+
+
+@router.post("/videos/{video_id}/auto-assign", response_model=VideoOut)
+def auto_assign_segments(video_id: int, db: DbSession, settings: AppSettings) -> VideoOut:
+    """Разложить непривязанные участки по длинам эксперимента по периоду."""
+    video = get_or_404(db, Video, video_id, "Видео")
+    auto_assign(video, _track_or_409(settings, video))
+    db.commit()
+    return video_out(video)
 
 
 @router.put("/videos/{video_id}/geometry", response_model=VideoOut)

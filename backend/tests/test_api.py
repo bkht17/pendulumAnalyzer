@@ -141,6 +141,19 @@ def test_full_video_pipeline(client, experiment, series, tmp_path):
     assert row["camera_vs_theory"]["compared"] == "t0"
     assert row["comparison"]["spread_ratio"] > 3
 
+    # Длину можно исправить (например, 50 → 50,5 см): участок пересчитывается, а
+    # автопривязка по периоду находит нужную длину для отвязанного участка.
+    edited = client.patch(f"/api/series/{series['id']}", json={"length_cm": 50.5}).json()
+    assert edited["length_cm"] == 50.5 and edited["segments"][0]["result"] is not None
+    client.patch(f"/api/segments/{segment['id']}", json={"series_id": None})
+    other = client.post(
+        f"/api/experiments/{experiment['id']}/series", json={"length_cm": 20}
+    ).json()
+    assigned = client.post(f"/api/videos/{video['id']}/auto-assign").json()
+    by_id = {s["id"]: s["series_id"] for s in assigned["segments"]}
+    assert by_id[segment["id"]] == series["id"]  # 50,5 см, а не 20 см
+    assert other["id"] not in by_id.values()
+
     # Удаление длины не удаляет видео — участок просто отвязывается.
     assert client.delete(f"/api/series/{series['id']}").status_code == 204
     again = client.get(f"/api/videos/{video['id']}").json()
