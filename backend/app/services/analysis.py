@@ -1,0 +1,497 @@
+"""Сводный анализ эксперимента: таблицы пп. 7–10 плана проекта и выводы.
+
+Ключевая идея честного сравнения методов. И секундомер, и камера измеряют интервал
+между двумя событиями, поэтому ошибка периода по N колебаниям равна √2·σ_события / N,
+где σ_события — погрешность фиксации одного момента времени. Для секундомера она
+оценивается по разбросу повторных замеров, для камеры — по остаткам регрессии моментов
+прохождения равновесия. Сравнивая σ_события, мы сравниваем сами методы, а не число
+колебаний, которое случайно уместилось в запись.
+"""
+
+from __future__ import annotations
+
+import math
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Sequence
+
+import numpy as np
+
+from app.models import Experiment, Series, StopwatchTrial, VideoStatus
+from app.schemas import (
+    AnalysisOut,
+    CameraStats,
+    Estimate,
+    LengthFit,
+    MethodComparison,
+    MethodTheory,
+    NDependence,
+    NDependencePoint,
+    OverallComparison,
+    RatioCheck,
+    SeriesAnalysis,
+    StopwatchByN,
+    StopwatchStats,
+    SummaryOut,
+    TheoryRow,
+    VideoResultOut,
+)
+from app.science import physics
+from app.science.stats import Summary, compare_variances, linear_fit, robust_outliers, summarize
+
+RATIO_TARGET = 4.0
+RATIO_TOLERANCE = 0.05
+AGREEMENT_Z = 2.0
+
+
+def _summary_out(s: Summary) -> SummaryOut:
+    return SummaryOut(n=s.n, mean=s.mean, std=s.std, sem=s.sem, ci95=s.ci95)
+
+
+def _pooled_std(groups: Iterable[tuple[float, int]]) -> tuple[float | None, int]:
+    """Объединённое СКО по группам (σ, степени свободы)."""
+    num = 0.0
+    dof = 0
+    for sigma, df in groups:
+        if df > 0 and sigma is not None and math.isfinite(sigma):
+            num += df * sigma**2
+            dof += df
+    return (math.sqrt(num / dof), dof) if dof else (None, 0)
+
+
+def trial_outlier_flags(trials: Sequence[StopwatchTrial]) -> dict[int, bool]:
+    flags: dict[int, bool] = {}
+    by_n: dict[int, list[StopwatchTrial]] = defaultdict(list)
+    for trial in trials:
+        if not trial.excluded:
+            by_n[trial.periods].append(trial)
+    for group in by_n.values():
+        for trial, flag in zip(group, robust_outliers([t.period_s for t in group]), strict=True):
+            flags[trial.id] = flag
+    return flags
+
+
+def _active_trials(series: Series) -> list[StopwatchTrial]:
+    return [t for t in series.trials if not t.excluded]
+
+
+def _camera_results(series: Series) -> list[VideoResultOut]:
+    return [
+        VideoResultOut.model_validate(v.result)
+        for v in series.videos
+        if v.status is VideoStatus.DONE and not v.excluded and v.result
+    ]
+
+
+def _main_trials(series: Series, main_periods: int) -> tuple[int, list[StopwatchTrial]]:
+    trials = _active_trials(series)
+    main = [t for t in trials if t.periods == main_periods]
+    if main or not trials:
+        return main_periods, main
+    periods, _ = Counter(t.periods for t in trials).most_common(1)[0]
+    return periods, [t for t in trials if t.periods == periods]
+
+
+def _stopwatch_stats(series: Series, main_periods: int) -> StopwatchStats | None:
+    periods, main = _main_trials(series, main_periods)
+    summary = summarize([t.period_s for t in main])
+    if summary is None:
+        return None
+    active = _active_trials(series)
+    by_n: dict[int, list[float]] = defaultdict(list)
+    for t in active:
+        by_n[t.periods].append(t.period_s)
+    return StopwatchStats(
+        periods=periods,
+        summary=_summary_out(summary),
+        event_sigma=summary.std * periods / math.sqrt(2) if summary.std is not None else None,
+        excluded=sum(t.excluded for t in series.trials),
+        outliers=sum(trial_outlier_flags(series.trials).values()),
+        by_periods=[
+            StopwatchByN(periods=n, summary=_summary_out(s))
+            for n in sorted(by_n)
+            if (s := summarize(by_n[n])) is not None
+        ],
+    )
+
+
+def _camera_stats(results: list[VideoResultOut], compare_periods: int) -> CameraStats | None:
+    between = summarize([r.period for r in results])
+    if between is None:
+        return None
+    ses = [r.period_se for r in results]
+    if all(se is not None and se > 0 for se in ses):
+        weights = np.array([1 / se**2 for se in ses if se is not None])
+        value = float(np.sum(weights * [r.period for r in results]) / weights.sum())
+        weighted_se: float | None = float(1 / math.sqrt(weights.sum()))
+    else:
+        value, weighted_se = between.mean, None
+    # Консервативно: берём бо́льшую из внутренней (регрессия) и внешней (между видео) оценок.
+    candidates = [s for s in (weighted_se, between.sem) if s is not None]
+    sigma = max(candidates) if candidates else None
+
+    event_sigma, _ = _pooled_std(
+        (r.event_sigma, r.crossings_count - 3) for r in results if r.event_sigma is not None
+    )
+    period_std, _ = _pooled_std(
+        (r.period_std, len(r.period_values) - 1) for r in results if r.period_std is not None
+    )
+    amplitudes = [r.amplitude_mean_deg for r in results if r.amplitude_mean_deg is not None]
+    return CameraStats(
+        videos=len(results),
+        period=Estimate(value=value, sigma=sigma),
+        between_videos=_summary_out(between),
+        event_sigma=event_sigma,
+        equivalent_std=math.sqrt(2) * event_sigma / compare_periods if event_sigma else None,
+        period_std=period_std,
+        amplitude_deg=float(np.mean(amplitudes)) if amplitudes else None,
+    )
+
+
+def _method_theory(
+    value: float,
+    sigma: float | None,
+    theory: TheoryRow,
+    series: Series,
+) -> MethodTheory:
+    reference = theory.t_corrected or theory.t0
+    combined = math.hypot(sigma or 0.0, theory.t0_sigma)
+    amp = theory.amplitude_deg
+    t0_exp = value / physics.amplitude_factor(math.radians(amp)) if amp else value
+    length_m = series.length_cm / 100
+    return MethodTheory(
+        deviation_pct=(value - reference) / reference * 100,
+        z_score=abs(value - reference) / combined if combined > 0 else None,
+        g=Estimate(
+            value=physics.g_from_period(length_m, t0_exp),
+            sigma=physics.g_from_period_sigma(
+                length_m, series.length_sigma_cm / 100, t0_exp, sigma or 0.0
+            ),
+        ),
+    )
+
+
+def _comparison(
+    stopwatch: StopwatchStats,
+    main: list[StopwatchTrial],
+    camera: CameraStats,
+    camera_df: int,
+) -> MethodComparison:
+    sw = stopwatch.summary
+    cam = camera.period
+    diff_sigma = (
+        math.hypot(sw.sem, cam.sigma) if sw.sem is not None and cam.sigma is not None else None
+    )
+    variance = (
+        compare_variances(sw.std, sw.n - 1, camera.equivalent_std, camera_df)
+        if sw.std is not None and camera.equivalent_std
+        else None
+    )
+    errors = [t.period_s - cam.value for t in main]
+    return MethodComparison(
+        difference=sw.mean - cam.value,
+        difference_sigma=diff_sigma,
+        spread_ratio=variance.ratio if variance else None,
+        f_statistic=variance.f_statistic if variance else None,
+        p_value=variance.p_value if variance else None,
+        stopwatch_rms_error=float(np.sqrt(np.mean(np.square(errors)))) if errors else None,
+    )
+
+
+def _analyze_series(series: Series, g: float, main_periods: int) -> SeriesAnalysis:
+    stopwatch = _stopwatch_stats(series, main_periods)
+    results = _camera_results(series)
+    compare_periods = stopwatch.periods if stopwatch else main_periods
+    camera = _camera_stats(results, compare_periods)
+
+    length_m = series.length_cm / 100
+    amplitude = (camera.amplitude_deg if camera else None) or series.amplitude_deg
+    t0 = physics.period_small_angle(length_m, g)
+    theory = TheoryRow(
+        t0=t0,
+        t0_sigma=physics.period_small_angle_sigma(length_m, series.length_sigma_cm / 100, g),
+        amplitude_deg=amplitude,
+        t_corrected=t0 * physics.amplitude_factor(math.radians(amplitude)) if amplitude else None,
+    )
+
+    comparison = None
+    if stopwatch and camera:
+        _, main = _main_trials(series, main_periods)
+        camera_df = sum(max(r.crossings_count - 3, 0) for r in results)
+        comparison = _comparison(stopwatch, main, camera, camera_df)
+
+    return SeriesAnalysis(
+        series_id=series.id,
+        length_cm=series.length_cm,
+        length_sigma_cm=series.length_sigma_cm,
+        stopwatch=stopwatch,
+        camera=camera,
+        comparison=comparison,
+        theory=theory,
+        stopwatch_vs_theory=(
+            _method_theory(stopwatch.summary.mean, stopwatch.summary.sem, theory, series)
+            if stopwatch
+            else None
+        ),
+        camera_vs_theory=(
+            _method_theory(camera.period.value, camera.period.sigma, theory, series)
+            if camera
+            else None
+        ),
+    )
+
+
+def _length_fit(points: list[tuple[float, float, float | None]]) -> LengthFit | None:
+    """points: (L в м, T₀ в с, σT). Аппроксимация T² = k·L + b."""
+    if len(points) < 2:
+        return None
+    lengths = [p[0] for p in points]
+    squares = [p[1] ** 2 for p in points]
+    sigmas = [2 * p[1] * p[2] if p[2] else math.nan for p in points]
+    fit = linear_fit(lengths, squares, sigmas)
+    if fit is None or fit.slope <= 0:
+        return None
+    k, b = fit.slope, fit.intercept
+    g = 4 * math.pi**2 / k
+    g_sigma = g * fit.slope_se / k if fit.slope_se is not None else None
+    offset_sigma = (
+        math.hypot(fit.intercept_se / k, b * fit.slope_se / k**2)
+        if fit.intercept_se is not None and fit.slope_se is not None
+        else None
+    )
+    return LengthFit(
+        points=fit.n,
+        slope=k,
+        slope_se=fit.slope_se,
+        intercept=b,
+        intercept_se=fit.intercept_se,
+        r2=fit.r2,
+        g=Estimate(value=g, sigma=g_sigma),
+        length_offset_cm=Estimate(
+            value=b / k * 100, sigma=offset_sigma * 100 if offset_sigma is not None else None
+        ),
+    )
+
+
+def _t0(row: SeriesAnalysis, value: float) -> float:
+    amp = row.theory.amplitude_deg
+    return value / physics.amplitude_factor(math.radians(amp)) if amp else value
+
+
+def _ratio(a: Estimate | None, b: Estimate | None) -> Estimate | None:
+    if a is None or b is None:
+        return None
+    r = b.value / a.value
+    if a.sigma is None or b.sigma is None:
+        return Estimate(value=r, sigma=None)
+    return Estimate(value=r, sigma=r * math.hypot(a.sigma / a.value, b.sigma / b.value))
+
+
+def _sw_estimate(row: SeriesAnalysis) -> Estimate | None:
+    if row.stopwatch is None:
+        return None
+    return Estimate(value=row.stopwatch.summary.mean, sigma=row.stopwatch.summary.sem)
+
+
+def _ratios(rows: list[SeriesAnalysis]) -> list[RatioCheck]:
+    checks = []
+    for i, short in enumerate(rows):
+        for long in rows[i + 1 :]:
+            q = long.length_cm / short.length_cm
+            if abs(q / RATIO_TARGET - 1) > RATIO_TOLERANCE:
+                continue
+            checks.append(
+                RatioCheck(
+                    short_cm=short.length_cm,
+                    long_cm=long.length_cm,
+                    expected=math.sqrt(q),
+                    stopwatch=_ratio(_sw_estimate(short), _sw_estimate(long)),
+                    camera=_ratio(
+                        short.camera.period if short.camera else None,
+                        long.camera.period if long.camera else None,
+                    ),
+                )
+            )
+    return checks
+
+
+def _n_dependence(experiment: Experiment) -> tuple[NDependence, float | None, int]:
+    per_n: dict[int, list[tuple[float, int]]] = defaultdict(list)
+    counts: Counter[int] = Counter()
+    event_groups: list[tuple[float, int]] = []
+    for series in experiment.series:
+        groups: dict[int, list[float]] = defaultdict(list)
+        for t in _active_trials(series):
+            groups[t.periods].append(t.period_s)
+        for n, values in groups.items():
+            s = summarize(values)
+            if s is None or s.std is None:
+                continue
+            per_n[n].append((s.std, s.n - 1))
+            counts[n] += s.n
+            event_groups.append((s.std * n / math.sqrt(2), s.n - 1))
+    points = []
+    for n in sorted(per_n):
+        std, _ = _pooled_std(per_n[n])
+        if std is not None:
+            points.append(NDependencePoint(periods=n, std=std, trials=counts[n]))
+    event_sigma, dof = _pooled_std(event_groups)
+    return NDependence(points=points, event_sigma=event_sigma), event_sigma, dof
+
+
+def _overall(
+    experiment: Experiment, stopwatch_event: float | None, stopwatch_df: int
+) -> OverallComparison:
+    camera_event, camera_df = _pooled_std(
+        (r.event_sigma, r.crossings_count - 3)
+        for series in experiment.series
+        for r in _camera_results(series)
+        if r.event_sigma is not None
+    )
+    variance = (
+        compare_variances(stopwatch_event, stopwatch_df, camera_event, camera_df)
+        if stopwatch_event and camera_event
+        else None
+    )
+    return OverallComparison(
+        stopwatch_event_sigma=stopwatch_event,
+        camera_event_sigma=camera_event,
+        ratio=variance.ratio if variance else None,
+        p_value=variance.p_value if variance else None,
+        stopwatch_df=stopwatch_df,
+        camera_df=camera_df,
+    )
+
+
+def _fmt(value: float, digits: int = 3) -> str:
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
+def _pm(value: float, sigma: float | None) -> str:
+    """Значение ± погрешность: погрешность — 2 значащие цифры, значение — с той же точностью."""
+    if sigma is None or sigma <= 0 or not math.isfinite(sigma):
+        return _fmt(value, 3)
+    digits = min(max(1 - math.floor(math.log10(sigma)), 0), 6)
+    return f"{_fmt(value, digits)} ± {_fmt(sigma, digits)}"
+
+
+def _p_text(p: float) -> str:
+    return "p < 0,001" if p < 0.001 else f"p = {_fmt(p)}"
+
+
+def _conclusions(
+    rows: list[SeriesAnalysis],
+    overall: OverallComparison,
+    fits: dict[str, LengthFit | None],
+    ratios: list[RatioCheck],
+    g_ref: float,
+) -> list[str]:
+    out: list[str] = []
+    if not rows:
+        return ["Добавьте хотя бы одну длину маятника и измерения, чтобы получить выводы."]
+
+    sw, cam = overall.stopwatch_event_sigma, overall.camera_event_sigma
+    if sw and cam and overall.ratio and overall.p_value is not None:
+        verdict = (
+            "Различие статистически значимо — гипотеза о меньшем разбросе видеометода "
+            "подтверждается."
+            if overall.p_value < 0.05
+            else "Различие статистически не значимо — нужно больше повторных замеров."
+        )
+        out.append(
+            f"Погрешность фиксации одного момента времени: секундомер ≈ {sw * 1000:.0f} мс, "
+            f"камера ≈ {_fmt(cam * 1000, 1)} мс — в {overall.ratio:.0f} раз меньше "
+            f"(F-тест, {_p_text(overall.p_value)}). {verdict}"
+        )
+    elif sw:
+        out.append(
+            f"Погрешность ручного запуска/остановки секундомера ≈ {sw * 1000:.0f} мс. "
+            "Обработайте видео, чтобы сравнить методы."
+        )
+    elif cam:
+        out.append(
+            f"Погрешность фиксации момента по видео ≈ {_fmt(cam * 1000, 1)} мс. "
+            "Добавьте ручные замеры (минимум 2 на длину), чтобы сравнить методы."
+        )
+
+    for label, key in (("камере", "camera_vs_theory"), ("секундомеру", "stopwatch_vs_theory")):
+        theory_rows = [getattr(r, key) for r in rows if getattr(r, key) is not None]
+        if not theory_rows:
+            continue
+        agree = sum(1 for t in theory_rows if t.z_score is not None and t.z_score < AGREEMENT_Z)
+        mean_dev = float(np.mean([abs(t.deviation_pct) for t in theory_rows]))
+        out.append(
+            f"Сравнение с формулой T = 2π√(L/g) по {label}: среднее расхождение "
+            f"{_fmt(mean_dev, 2)} %, в пределах погрешности (|z| < 2) — "
+            f"{agree} из {len(theory_rows)} длин."
+        )
+
+    for label, fit in (("камеры", fits["camera"]), ("секундомера", fits["stopwatch"])):
+        if fit is None or fit.points < 3:
+            continue
+        text = (
+            f"По наклону графика T²(L) для {label}: g = {_pm(fit.g.value, fit.g.sigma)} м/с² "
+            f"(справочное значение {_fmt(g_ref, 3)} м/с²)."
+        )
+        offset = fit.length_offset_cm
+        if offset.sigma is not None and abs(offset.value) > 2 * offset.sigma:
+            text += (
+                f" Обнаружена систематическая добавка к длине {_pm(offset.value, offset.sigma)} см"
+                " — вероятно, длина измерялась не до центра масс груза."
+            )
+        out.append(text)
+        break  # достаточно лучшего доступного метода
+
+    for check in ratios:
+        est = check.camera or check.stopwatch
+        if est is None:
+            continue
+        source = "камера" if check.camera else "секундомер"
+        out.append(
+            f"При увеличении длины с {check.short_cm:g} до {check.long_cm:g} см период вырос в "
+            f"{_fmt(est.value, 3)} раза ({source}); теория предсказывает {_fmt(check.expected, 3)}."
+        )
+
+    big = [r for r in rows if r.theory.amplitude_deg and r.theory.amplitude_deg > 10]
+    if big:
+        out.append(
+            "Амплитуда больше 10°: поправка к периоду превышает 0,2 % и сопоставима с "
+            "точностью видеометода — уменьшите угол отклонения до 5–7°."
+        )
+    return out
+
+
+def analyze_experiment(experiment: Experiment) -> AnalysisOut:
+    g = experiment.g_reference
+    rows = [_analyze_series(s, g, experiment.main_periods) for s in experiment.series]
+    n_dep, sw_event, sw_df = _n_dependence(experiment)
+    overall = _overall(experiment, sw_event, sw_df)
+
+    fit_sw = _length_fit(
+        [
+            (r.length_cm / 100, _t0(r, r.stopwatch.summary.mean), r.stopwatch.summary.sem)
+            for r in rows
+            if r.stopwatch
+        ]
+    )
+    fit_cam = _length_fit(
+        [
+            (r.length_cm / 100, _t0(r, r.camera.period.value), r.camera.period.sigma)
+            for r in rows
+            if r.camera
+        ]
+    )
+    ratios = _ratios(rows)
+    return AnalysisOut(
+        experiment_id=experiment.id,
+        g_reference=g,
+        main_periods=experiment.main_periods,
+        series=rows,
+        overall=overall,
+        fit_stopwatch=fit_sw,
+        fit_camera=fit_cam,
+        ratios=ratios,
+        n_dependence=n_dep,
+        conclusions=_conclusions(
+            rows, overall, {"camera": fit_cam, "stopwatch": fit_sw}, ratios, g
+        ),
+    )
