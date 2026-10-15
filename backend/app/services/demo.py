@@ -14,7 +14,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models import Experiment, Series, StopwatchTrial, Video, VideoStatus
-from app.schemas import ColorIn, Point, TrackingParamsIn
+from app.schemas import Point, TrackingParamsIn
 from app.science import physics
 from app.science.synthetic import SyntheticPendulum, pivot_point
 
@@ -85,12 +85,14 @@ def create_demo_experiment(
             duration_s=spec.duration_s,
             status=VideoStatus.QUEUED,
             params=TrackingParamsIn(
-                color=ColorIn(h_min=50, h_max=70, s_min=80, v_min=60),
+                method="motion",
                 t_start=0.5,
                 pivot=Point(x=pivot_point(spec)[0], y=pivot_point(spec)[1]),
             ).model_dump(),
         )
-        series.videos.append(video)
+        session.flush()  # нужен id серии для привязки видео
+        video.preferred_series_id = series.id
+        experiment.videos.append(video)
         pending.append((video, spec))
     session.commit()
     return experiment, [(video.id, spec) for video, spec in pending]

@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from app.models import Experiment, Series, StopwatchTrial, Video
-from app.schemas import ExperimentDetail, ExperimentOut, SeriesOut, TrialOut, VideoOut
+from app.models import Experiment, Series, StopwatchTrial, Video, VideoSegment
+from app.schemas import (
+    ExperimentDetail,
+    ExperimentOut,
+    SegmentOut,
+    SeriesOut,
+    TrialOut,
+    VideoOut,
+)
 from app.services.analysis import trial_outlier_flags
 
 
@@ -11,8 +18,16 @@ def trial_out(trial: StopwatchTrial, outlier: bool = False) -> TrialOut:
     return out
 
 
+def segment_out(segment: VideoSegment) -> SegmentOut:
+    out = SegmentOut.model_validate(segment)
+    out.video_name = segment.video.original_name
+    return out
+
+
 def video_out(video: Video) -> VideoOut:
-    return VideoOut.model_validate(video)
+    out = VideoOut.model_validate(video)
+    out.segments = [segment_out(s) for s in video.segments]
+    return out
 
 
 def series_out(series: Series) -> SeriesOut:
@@ -26,7 +41,7 @@ def series_out(series: Series) -> SeriesOut:
         notes=series.notes,
         created_at=series.created_at,
         trials=[trial_out(t, flags.get(t.id, False)) for t in series.trials],
-        videos=[video_out(v) for v in series.videos],
+        segments=[segment_out(s) for s in series.segments],
     )
 
 
@@ -34,10 +49,14 @@ def experiment_out(experiment: Experiment) -> ExperimentOut:
     out = ExperimentOut.model_validate(experiment)
     out.series_count = len(experiment.series)
     out.trials_count = sum(len(s.trials) for s in experiment.series)
-    out.videos_count = sum(len(s.videos) for s in experiment.series)
+    out.videos_count = len(experiment.videos)
     return out
 
 
 def experiment_detail(experiment: Experiment) -> ExperimentDetail:
     base = experiment_out(experiment)
-    return ExperimentDetail(**base.model_dump(), series=[series_out(s) for s in experiment.series])
+    return ExperimentDetail(
+        **base.model_dump(),
+        series=[series_out(s) for s in experiment.series],
+        videos=[video_out(v) for v in experiment.videos],
+    )

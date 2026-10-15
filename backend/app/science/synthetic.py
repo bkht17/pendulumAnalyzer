@@ -31,6 +31,8 @@ class SyntheticPendulum:
     noise: float = 3.0
     """СКО гауссова шума яркости, имитирует шум матрицы."""
     seed: int = 0
+    hold_s: float = 0.0
+    """Сколько секунд груз держат неподвижно перед запуском (как рукой в реальной записи)."""
 
 
 def pivot_point(p: SyntheticPendulum) -> tuple[float, float]:
@@ -38,6 +40,14 @@ def pivot_point(p: SyntheticPendulum) -> tuple[float, float]:
 
 
 def simulate_angle(p: SyntheticPendulum, t: np.ndarray) -> np.ndarray:
+    theta = np.full_like(t, math.radians(p.amplitude_deg))
+    free = t >= p.hold_s
+    if free.any():
+        theta[free] = _free_swing(p, t[free] - p.hold_s)
+    return theta
+
+
+def _free_swing(p: SyntheticPendulum, t: np.ndarray) -> np.ndarray:
     omega2 = p.g / p.length_m
 
     def rhs(_t: float, state: np.ndarray) -> list[float]:
@@ -46,7 +56,7 @@ def simulate_angle(p: SyntheticPendulum, t: np.ndarray) -> np.ndarray:
 
     sol = solve_ivp(
         rhs,
-        (0.0, float(t[-1])),
+        (0.0, max(float(t[-1]), 1e-6)),
         [math.radians(p.amplitude_deg), 0.0],
         t_eval=t,
         rtol=1e-10,

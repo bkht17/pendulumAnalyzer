@@ -122,20 +122,27 @@ class ScaleIn(BaseModel):
 
 
 class TrackingParamsIn(BaseModel):
-    color: ColorIn
+    method: Literal["motion", "color"] = "motion"
+    """motion — вычитание фона (маркер не нужен), color — цветной маркер."""
+    color: ColorIn | None = None
     roi: RoiIn | None = None
-    min_area: int = Field(default=12, ge=1)
+    min_area: int = Field(default=30, ge=1)
+    motion_threshold: int = Field(default=25, ge=3, le=200)
+    polarity: Literal["auto", "dark", "bright"] = "auto"
+    """Груз темнее фона (стальной шарик на белой стене), светлее или определить само."""
     t_start: float | None = Field(default=None, ge=0)
     t_end: float | None = Field(default=None, gt=0)
     axis: Literal["auto", "x", "y"] = "auto"
     pivot: Point | None = None
-    """Точка подвеса — позволяет перевести амплитуду в градусы без калибровки масштаба."""
+    """Точка подвеса. Если не задана, находится сама — подгонкой окружности по дуге."""
     scale: ScaleIn | None = None
 
     @model_validator(mode="after")
-    def _check_interval(self) -> TrackingParamsIn:
+    def _check(self) -> TrackingParamsIn:
         if self.t_start is not None and self.t_end is not None and self.t_end <= self.t_start:
             raise ValueError("Конец интервала должен быть позже начала")
+        if self.method == "color" and self.color is None:
+            raise ValueError("Для метода «Цвет маркера» выберите цвет")
         return self
 
 
@@ -144,6 +151,12 @@ class FrameTimingOut(BaseModel):
     frame_interval_jitter: float
     variable_frame_rate: bool
     dropped_frames: int
+
+
+class TrackInfoOut(BaseModel):
+    axis: Literal["x", "y"]
+    detection_rate: float
+    frames: int
 
 
 class FitOut(BaseModel):
@@ -157,17 +170,21 @@ class FitOut(BaseModel):
     rms: float
 
 
-class VideoResultOut(BaseModel):
+class SegmentResultOut(BaseModel):
     axis: Literal["x", "y"]
     period: float
+    """Средний период на участке (то, что измеряет секундомер)."""
     period_se: float | None
     event_sigma: float | None
     period_std: float | None
     periods_observed: float
     crossings_count: int
+    outliers: int
     crossing_times: list[float]
     period_values: list[float]
     period_value_times: list[float]
+    period_amplitudes_deg: list[float]
+    """Амплитуда в середине каждого периода (пусто, если угол не определить)."""
     center_px: float
     amplitude_start_px: float
     amplitude_mean_px: float
@@ -177,8 +194,61 @@ class VideoResultOut(BaseModel):
     fit: FitOut | None
     detection_rate: float
     frames_analyzed: int
+    length_px: float | None
+    length_px_source: Literal["pivot", "arc", "scale"] | None
+    """Откуда известна длина нити в пикселях: отмеченный подвес, дуга траектории, масштаб."""
+    pivot_px: Point | None
     px_per_cm: float | None
     length_from_video_cm: float | None
+    t0: float | None
+    """Период при малой амплитуде: T/f(θ), усреднённый по отдельным периодам."""
+    t0_se: float | None
+    amplitude_k: float | None
+    """Свободная подгонка T = T₀(1 + k·θ²); теория: k = 1/16."""
+    amplitude_k_se: float | None
+    theta_min_deg: float | None
+    theta_max_deg: float | None
+
+
+class SegmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    video_id: int
+    video_name: str = ""
+    series_id: int | None
+    t_start: float
+    t_end: float
+    auto: bool
+    excluded: bool
+    result: SegmentResultOut | None
+    error: str | None
+
+
+class SegmentIn(BaseModel):
+    t_start: float = Field(ge=0)
+    t_end: float = Field(gt=0)
+    series_id: int | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> SegmentIn:
+        if self.t_end <= self.t_start:
+            raise ValueError("Конец участка должен быть позже начала")
+        return self
+
+
+class SegmentPatch(BaseModel):
+    series_id: int | None = None
+    excluded: bool | None = None
+    t_start: float | None = Field(default=None, ge=0)
+    t_end: float | None = Field(default=None, gt=0)
+
+
+class GeometryIn(BaseModel):
+    """Точка подвеса и масштаб — меняются без повторного трекинга."""
+
+    pivot: Point | None = None
+    scale: ScaleIn | None = None
 
 
 class VideoPatch(BaseModel):
@@ -189,7 +259,8 @@ class VideoOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    series_id: int
+    experiment_id: int
+    preferred_series_id: int | None
     original_name: str
     size_bytes: int
     width: int
@@ -202,7 +273,8 @@ class VideoOut(BaseModel):
     error: str | None
     params: TrackingParamsIn | None
     timing: FrameTimingOut | None
-    result: VideoResultOut | None
+    track_info: TrackInfoOut | None
+    segments: list[SegmentOut]
     excluded: bool
     created_at: datetime
     processed_at: datetime | None
@@ -226,7 +298,7 @@ class PreviewOut(BaseModel):
     y: float | None
     area: int
     mask_png: str
-    """Маска области поиска в base64 (PNG, белое — пиксели цвета маркера)."""
+    """Маска области поиска в base64 (PNG, белое — пиксели груза)."""
     roi: RoiIn
 
 
@@ -247,11 +319,12 @@ class SeriesOut(BaseModel):
     notes: str
     created_at: datetime
     trials: list[TrialOut]
-    videos: list[VideoOut]
+    segments: list[SegmentOut]
 
 
 class ExperimentDetail(ExperimentOut):
     series: list[SeriesOut]
+    videos: list[VideoOut]
 
 
 # --- Анализ ------------------------------------------------------------------------------
@@ -288,15 +361,21 @@ class StopwatchStats(BaseModel):
 
 
 class CameraStats(BaseModel):
-    videos: int
+    segments: int
     period: Estimate
-    between_videos: SummaryOut
+    """Средний период при той амплитуде, с которой качался груз."""
+    t0: Estimate | None
+    """Период при малой амплитуде (если угол амплитуды известен)."""
+    between_segments: SummaryOut
     event_sigma: float | None
     """Погрешность фиксации момента прохождения равновесия (объединённая по видео)."""
     equivalent_std: float | None
     """Разброс, который дала бы камера при измерении того же числа колебаний, что и секундомер."""
     period_std: float | None
     amplitude_deg: float | None
+    amplitude_min_deg: float | None
+    amplitude_max_deg: float | None
+    amplitude_k: Estimate | None
 
 
 class MethodComparison(BaseModel):
@@ -319,6 +398,9 @@ class TheoryRow(BaseModel):
 
 
 class MethodTheory(BaseModel):
+    compared: Literal["t0", "mean"] = "mean"
+    """t0 — сравнивается период при малой амплитуде с T₀ теории; mean — средний период
+    с теорией, поправленной на амплитуду."""
     deviation_pct: float
     """(Tэксп − Tтеор) / Tтеор · 100 % — со знаком, относительно T с учётом амплитуды."""
     z_score: float | None

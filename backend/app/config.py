@@ -16,8 +16,12 @@ class Settings:
     tracking_workers: int
 
     @property
+    def database_path(self) -> Path:
+        return self.data_dir / "pendulum.db"
+
+    @property
     def database_url(self) -> str:
-        return f"sqlite:///{self.data_dir / 'pendulum.db'}"
+        return f"sqlite:///{self.database_path}"
 
     @property
     def videos_dir(self) -> Path:

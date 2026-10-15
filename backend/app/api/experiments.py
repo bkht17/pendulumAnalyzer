@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import AppSettings, DbSession, Queue, remove_video_files
 from app.api.serializers import experiment_detail, experiment_out, series_out
-from app.models import Experiment, Series
+from app.models import Experiment, Series, Video, VideoSegment
 from app.schemas import (
     AnalysisOut,
     ExperimentDetail,
@@ -26,7 +26,8 @@ router = APIRouter(prefix="/experiments", tags=["experiments"])
 
 _FULL = (
     selectinload(Experiment.series).selectinload(Series.trials),
-    selectinload(Experiment.series).selectinload(Series.videos),
+    selectinload(Experiment.series).selectinload(Series.segments).selectinload(VideoSegment.video),
+    selectinload(Experiment.videos).selectinload(Video.segments),
 )
 
 
@@ -80,7 +81,7 @@ def update_experiment(experiment_id: int, payload: ExperimentPatch, db: DbSessio
 @router.delete("/{experiment_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_experiment(experiment_id: int, db: DbSession, settings: AppSettings) -> Response:
     experiment = _load(db, experiment_id)
-    video_ids = [v.id for s in experiment.series for v in s.videos]
+    video_ids = [v.id for v in experiment.videos]
     db.delete(experiment)
     db.commit()
     remove_video_files(settings, video_ids)
@@ -123,9 +124,11 @@ def export_csv(experiment_id: int, db: DbSession) -> Response:
             "T секундомер, с",
             "Разброс σ, с",
             "Ст. ошибка, с",
-            "Видео",
-            "T камера, с",
+            "Участков видео",
+            "T камера (средний), с",
             "Погрешность T камеры, с",
+            "T₀ камера (малые колебания), с",
+            "Погрешность T₀, с",
             "Разброс камеры (тот же N), с",
             "Разница, с",
             "Отношение разбросов",
@@ -150,9 +153,11 @@ def export_csv(experiment_id: int, db: DbSession) -> Response:
                 _num(sw.summary.mean if sw else None),
                 _num(sw.summary.std if sw else None),
                 _num(sw.summary.sem if sw else None),
-                cam.videos if cam else "",
+                cam.segments if cam else "",
                 _num(cam.period.value if cam else None, 5),
                 _num(cam.period.sigma if cam else None, 5),
+                _num(cam.t0.value if cam and cam.t0 else None, 5),
+                _num(cam.t0.sigma if cam and cam.t0 else None, 5),
                 _num(cam.equivalent_std if cam else None, 5),
                 _num(cmp_.difference if cmp_ else None),
                 _num(cmp_.spread_ratio if cmp_ else None, 1),
@@ -168,7 +173,7 @@ def export_csv(experiment_id: int, db: DbSession) -> Response:
         )
     filename = f"experiment_{experiment.id}.csv"
     return Response(
-        content="﻿" + buffer.getvalue(),
+        content="\ufeff" + buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

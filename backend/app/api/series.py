@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Response, status
 
-from app.api.deps import AppSettings, DbSession, get_or_404, remove_video_files
+from app.api.deps import DbSession, get_or_404
 from app.api.serializers import series_out, trial_out
 from app.models import Series, StopwatchTrial
 from app.schemas import SeriesOut, SeriesPatch, TrialIn, TrialOut, TrialPatch
@@ -25,12 +25,10 @@ def update_series(series_id: int, payload: SeriesPatch, db: DbSession) -> Series
 
 
 @router.delete("/series/{series_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_series(series_id: int, db: DbSession, settings: AppSettings) -> Response:
-    series = get_or_404(db, Series, series_id, "Серия")
-    video_ids = [v.id for v in series.videos]
-    db.delete(series)
+def delete_series(series_id: int, db: DbSession) -> Response:
+    """Видео остаются в эксперименте: их участки просто отвязываются от этой длины."""
+    db.delete(get_or_404(db, Series, series_id, "Серия"))
     db.commit()
-    remove_video_files(settings, video_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

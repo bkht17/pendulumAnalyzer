@@ -8,7 +8,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 
 from app.api import experiments, series, videos
 from app.config import Settings, get_settings
-from app.db import Database
+from app.db import Database, prepare_sqlite_file
 from app.services.jobs import TrackingQueue
 
 log = logging.getLogger(__name__)
@@ -19,6 +19,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        prepare_sqlite_file(settings.database_path, related=(settings.videos_dir,))
         settings.videos_dir.mkdir(parents=True, exist_ok=True)
         database = Database(settings.database_url)
         database.create_all()

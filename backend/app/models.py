@@ -33,6 +33,11 @@ class Experiment(Base):
         cascade="all, delete-orphan",
         order_by="Series.length_cm",
     )
+    videos: Mapped[list[Video]] = relationship(
+        back_populates="experiment",
+        cascade="all, delete-orphan",
+        order_by="Video.id",
+    )
 
 
 class Series(Base):
@@ -55,10 +60,10 @@ class Series(Base):
         cascade="all, delete-orphan",
         order_by="StopwatchTrial.id",
     )
-    videos: Mapped[list[Video]] = relationship(
+    segments: Mapped[list[VideoSegment]] = relationship(
         back_populates="series",
-        cascade="all, delete-orphan",
-        order_by="Video.id",
+        passive_deletes=True,
+        order_by="VideoSegment.t_start",
     )
 
 
@@ -91,10 +96,13 @@ class VideoStatus(enum.StrEnum):
 
 
 class Video(Base):
+    """Видеофайл эксперимента. В одной записи может быть несколько серий (разные длины
+    нити) — они хранятся как участки (VideoSegment) и привязываются к длинам по отдельности."""
+
     __tablename__ = "videos"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    series_id: Mapped[int] = mapped_column(ForeignKey("series.id", ondelete="CASCADE"))
+    experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id", ondelete="CASCADE"))
     original_name: Mapped[str] = mapped_column(String(255))
     stored_name: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int]
@@ -103,17 +111,50 @@ class Video(Base):
     fps_nominal: Mapped[float]
     frame_count: Mapped[int]
     duration_s: Mapped[float]
+    preferred_series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id", ondelete="SET NULL"), default=None
+    )
+    """Длина, со страницы которой загрузили видео: ей отдаётся участок, если он один."""
     status: Mapped[VideoStatus] = mapped_column(
         Enum(VideoStatus, native_enum=False, length=20), default=VideoStatus.UPLOADED
     )
     progress: Mapped[float] = mapped_column(default=0.0)
     error: Mapped[str | None] = mapped_column(Text, default=None)
     params: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
-    """Настройки трекинга: цвет, область поиска, точка подвеса, масштаб, обрезка."""
+    """Настройки трекинга: метод, цвет, область поиска, точка подвеса, масштаб, обрезка."""
     timing: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
-    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    track_info: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    """Сводка трекинга: ось колебаний, доля кадров с найденным грузом."""
     excluded: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(default=_now)
     processed_at: Mapped[datetime | None] = mapped_column(default=None)
 
-    series: Mapped[Series] = relationship(back_populates="videos")
+    experiment: Mapped[Experiment] = relationship(back_populates="videos")
+    segments: Mapped[list[VideoSegment]] = relationship(
+        back_populates="video",
+        cascade="all, delete-orphan",
+        order_by="VideoSegment.t_start",
+    )
+
+
+class VideoSegment(Base):
+    """Участок свободных колебаний внутри видео — одна серия при одной длине нити."""
+
+    __tablename__ = "video_segments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    video_id: Mapped[int] = mapped_column(ForeignKey("videos.id", ondelete="CASCADE"))
+    series_id: Mapped[int | None] = mapped_column(
+        ForeignKey("series.id", ondelete="SET NULL"), default=None
+    )
+    t_start: Mapped[float]
+    t_end: Mapped[float]
+    auto: Mapped[bool] = mapped_column(default=True)
+    """Найден автоматически (False — задан пользователем)."""
+    excluded: Mapped[bool] = mapped_column(default=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(default=_now)
+
+    video: Mapped[Video] = relationship(back_populates="segments")
+    series: Mapped[Series | None] = relationship(back_populates="segments")
